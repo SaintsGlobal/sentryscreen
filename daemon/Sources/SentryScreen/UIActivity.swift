@@ -420,11 +420,15 @@ final class UIActivity: ObservableObject {
             let user = Self.userName(uid)
             var lastTs: Date?
             var lastCapture: (at: Date, info: String)?
+            var lastDetector: (at: Date, info: String)?
             let result = LogTail.tailGenerations(path: "\(root!)/\(uid)/run.jsonl", want: Self.rows) { rec in
                 let at = UISettings.iso.date(from: rec.ts)
                 if lastTs == nil { lastTs = at }
                 if lastCapture == nil, rec.event == "capture", let at, let info = rec.info {
                     lastCapture = (at, info)
+                }
+                if lastDetector == nil, rec.event == "detector", let at, let info = rec.info {
+                    lastDetector = (at, info)
                 }
                 return rec.event == "curtain" && rec.info?.hasPrefix("drop") == true
             }
@@ -439,7 +443,8 @@ final class UIActivity: ObservableObject {
                     out.items.append(ActivityItem(app: drop.app, at: at, uid: uid))
                 }
                 out.sessions.append(SessionHealth(user: user,
-                    text: Self.healthText(lastTs: lastTs, lastCapture: lastCapture, now: now)))
+                    text: Self.healthText(
+                        lastTs: lastTs, lastCapture: lastCapture, lastDetector: lastDetector, now: now)))
             }
         }
         return out
@@ -463,8 +468,15 @@ final class UIActivity: ObservableObject {
     /// Spec §7.4 wording. The latest `capture` event seen in the tail decides
     /// lost-vs-live; none seen means drops were logged after any outage, so
     /// the stream was live. Stale beats live: a session whose log stopped is
-    /// not protecting whatever its last capture record said.
-    static func healthText(lastTs: Date?, lastCapture: (at: Date, info: String)?, now: Date) -> String {
+    /// not protecting whatever its last capture record said. The latest
+    /// `detector` event decides the same way (review 2026-10-16): capture can
+    /// stay healthy while every inference throws, and `state=failing` or
+    /// `state=stalled` with no later `healthy`/`recovered`/`stall-cleared`
+    /// means new content is not being checked, which is not "protecting".
+    static func healthText(
+        lastTs: Date?, lastCapture: (at: Date, info: String)?,
+        lastDetector: (at: Date, info: String)? = nil, now: Date
+    ) -> String {
         guard let lastTs else { return "no log records" }
         if now.timeIntervalSince(lastTs) > staleSecs { return "no recent log activity" }
         if let c = lastCapture {
@@ -472,9 +484,17 @@ final class UIActivity: ObservableObject {
             switch state {
             case "state=down", "state=lost", "state=fatal", "state=retry":
                 return "capture lost since \(UIState.clockTime.string(from: c.at))"
+            case "state=exclusion-failed":
+                return "covers not excluded from capture since \(UIState.clockTime.string(from: c.at))"
             case "state=suspended":
                 return "session inactive (last activity \(relative(lastTs, now: now)))"
             default: break
+            }
+        }
+        if let d = lastDetector {
+            let state = d.info.split(separator: " ").first.map(String.init) ?? ""
+            if state == "state=failing" || state == "state=stalled" {
+                return "detector failing since \(UIState.clockTime.string(from: d.at))"
             }
         }
         return "protecting (last activity \(relative(lastTs, now: now)))"

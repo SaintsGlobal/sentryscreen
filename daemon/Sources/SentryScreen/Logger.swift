@@ -349,9 +349,30 @@ final class FrameLogger {
     private let openLogFile: (String) -> FileHandle?
     private let errorHandle: FileHandle
 
+    /// The installed --log path is in a directory the protected account owns,
+    /// so it can be swapped for a FIFO, and a blocking open of a FIFO with no
+    /// reader never returns (review 2026-10-16: the daemon would stall before
+    /// its first frame). Open O_NONBLOCK|O_NOFOLLOW, keep the descriptor only
+    /// when fstat says it is a regular file, then clear O_NONBLOCK. Anything
+    /// else returns nil, which the callers already report loudly. The root
+    /// watchdog moves a non-regular run.jsonl aside (watchdog.sh
+    /// repair_log_files).
+    static func openRegularFile(_ path: String) -> FileHandle? {
+        let fd = Darwin.open(path, O_WRONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK) == 0
+        else {
+            Darwin.close(fd)
+            return nil
+        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
     init(
         path: String?, quiet: Bool = false, mode: LogMode = .full, live: Bool = false,
-        openLogFile: @escaping (String) -> FileHandle? = { FileHandle(forWritingAtPath: $0) },
+        openLogFile: @escaping (String) -> FileHandle? = FrameLogger.openRegularFile,
         errorHandle: FileHandle = .standardError
     ) {
         self.quiet = quiet

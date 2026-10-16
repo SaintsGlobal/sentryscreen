@@ -2469,6 +2469,8 @@ enum UISelfTest {
         check("activity: health lost", UIActivity.healthText(lastTs: now, lastCapture: (now, "state=down error=x"), now: now).hasPrefix("capture lost since"))
         check("activity: health stale", UIActivity.healthText(lastTs: now.addingTimeInterval(-UIActivity.staleSecs - 1), lastCapture: nil, now: now) == "no recent log activity")
         check("activity: health live", UIActivity.healthText(lastTs: now, lastCapture: (now, "state=restored after 1 attempt(s)"), now: now).hasPrefix("protecting"))
+        check("activity: health detector failing", UIActivity.healthText(lastTs: now, lastCapture: nil, lastDetector: (now, "state=failing budget x"), now: now).hasPrefix("detector failing since"))
+        check("activity: health detector recovered", UIActivity.healthText(lastTs: now, lastCapture: nil, lastDetector: (now, "state=recovered observed 3"), now: now).hasPrefix("protecting"))
         check("activity: p95 of 20 samples is the 19th", WindowOwner.p95((1...20).map(Double.init)) == 19)
     }
 
