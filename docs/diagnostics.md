@@ -45,8 +45,11 @@ One HTTPS `POST` to the address the app was built with
 the report plus a small envelope (app version and build, macOS version,
 architecture, `reason: manual`, the time). The receiver requires a
 `machine_id` field; SentryScreen fills it with a new random value for every
-report and never stores it, so two reports cannot be linked to each other or
-to a Mac.
+report and never stores it, so that field does not link reports. The rest of
+the report can: two reports from the same Mac can contain the same log lines
+or the same crash report (with its incident identifier and time), so the
+receiver could tell they came from one Mac. Read the report before you send
+it; that is what you are sending.
 
 The reply is read only for its HTTP status, to show "sent" or "not sent".
 Nothing from the server is stored or acted on.

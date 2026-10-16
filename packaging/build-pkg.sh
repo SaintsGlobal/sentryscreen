@@ -139,6 +139,7 @@ done
 install -m 644 LICENSE "$SUPPORT/licenses/LICENSE.txt"
 install -m 644 NOTICE "$SUPPORT/licenses/NOTICE.txt"
 install -m 644 packaging/THIRD-PARTY.txt "$SUPPORT/licenses/THIRD-PARTY.txt"
+install -m 644 packaging/licenses/Apache-2.0.txt "$SUPPORT/licenses/Apache-2.0.txt"
 install -m 644 packaging/launchd/com.sentryscreen.agent.plist "$PAYLOAD/Library/LaunchAgents/"
 install -m 644 packaging/launchd/com.sentryscreen.watchdog.plist "$PAYLOAD/Library/LaunchDaemons/"
 

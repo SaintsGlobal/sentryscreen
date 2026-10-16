@@ -415,6 +415,14 @@ final class CaptureStream: NSObject, SCStreamOutput, SCStreamDelegate {
     /// desktop, Screen Sharing); the 5 × 1 s shape is UNMEASURED there.
     private static let rearmAttempts = 5
     private static let rearmDelay: TimeInterval = 1
+    /// Slow cadence for self-exclusion once the `rearmAttempts` x
+    /// `rearmDelay` chain has failed. ASSUMED (review 2026-10-16, no failure
+    /// observed in the field yet): 30 s keeps a stuck WindowServer from being
+    /// polled more than twice a minute while bounding how long covers can stay
+    /// visible to the detector after it recovers. Each failure and the eventual
+    /// success are `"event":"capture"` records (`state=exclusion-failed`,
+    /// `state=exclusion-applied`).
+    private static let exclusionRetrySecs: TimeInterval = 30
     /// `start` arguments, kept so a re-arm rebuilds the identical stream.
     private var startArgs: (fps: Int, width: Int, displayID: CGDirectDisplayID?)?
     /// True between a successful `start` and the stop that ends it.
@@ -546,6 +554,10 @@ final class CaptureStream: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func reportExclusion(_ result: ExclusionResult) {
         DispatchQueue.main.async { [weak self] in self?.onExclusionResult?(result) }
+    }
+    /// `report` from the exclusion Task, which is not on main.
+    private func reportOnMain(_ info: String) {
+        DispatchQueue.main.async { [weak self] in self?.report(info) }
     }
 
     init(onFrame: @escaping (Frame) -> Void) {
@@ -1332,9 +1344,10 @@ final class CaptureStream: NSObject, SCStreamOutput, SCStreamDelegate {
             // Same budget as the re-arm chain (Self.rearmAttempts/rearmDelay)
             // ON PURPOSE — one source of truth for "how long to ride out a
             // transient SCShareableContent refusal" (reuse review 2026-08-21).
-            for attempt in 1...Self.rearmAttempts {
-                guard exclusionRequests.isNewest(request) else { return }
-                guard let display, let stream else { return }
+            // nil: superseded, or no stream (the rebuild's refresh answers).
+            func attemptOnce() async -> Bool? {
+                guard exclusionRequests.isNewest(request) else { return nil }
+                guard let display, let stream else { return nil }
                 if let content = try? await SCShareableContent.excludingDesktopWindows(
                     false, onScreenWindowsOnly: true)
                 {
@@ -1351,7 +1364,7 @@ final class CaptureStream: NSObject, SCStreamOutput, SCStreamDelegate {
                     // region pipeline strobed (dets → cover → no dets → lift
                     // → dets, ~10 s period). Missing ids retry on the same
                     // budget; the extras fail loudly below if never found.
-                    guard exclusionRequests.isNewest(request) else { return }
+                    guard exclusionRequests.isNewest(request) else { return nil }
                     if found.isSuperset(of: wanted), !mine.isEmpty || emptySetApplies,
                         (try? await stream.updateContentFilter(
                             SCContentFilter(display: display, excludingWindows: mine))) != nil
@@ -1367,9 +1380,14 @@ final class CaptureStream: NSObject, SCStreamOutput, SCStreamDelegate {
                             report("state=excluded windows=\(Array(found).sorted()) "
                                 + "extra=\(extraExcluded)")
                         }
-                        return
+                        return true
                     }
                 }
+                return false
+            }
+            for attempt in 1...Self.rearmAttempts {
+                guard let applied = await attemptOnce() else { return }
+                if applied { return }
                 if attempt < Self.rearmAttempts {
                     try? await Task.sleep(for: .seconds(Self.rearmDelay))
                 }
@@ -1387,10 +1405,31 @@ final class CaptureStream: NSObject, SCStreamOutput, SCStreamDelegate {
                         + "the shield on screen for the daemon's lifetime)",
                     code: 2)
             }
-            let warning = "WARNING: capture self-exclusion failed after "
-                + "\(Self.rearmAttempts) attempts — "
-                + "overlay strobe possible (fix: Capture.refreshExclusion)\n"
-            FileHandle.standardError.write(Data(warning.utf8))
+            // Fail loudly and keep trying (review 2026-10-16): with the covers
+            // unexcluded the detector sees our own black cover instead of the
+            // content under it, the tracked region expires, and the content is
+            // exposed again. Ordinary frames never ask again (the cover window
+            // is created once), so this chain is the only retry. A named
+            // capture record reaches run.jsonl, diagnostics and the parent's
+            // cross-account status (UIActivity.healthText).
+            let failedAt = Date()
+            let detail = "budget captureExclusion limit \(Self.rearmAttempts) attempts "
+                + "\(Self.rearmDelay)s apart, then every \(Int(Self.exclusionRetrySecs))s"
+            reportOnMain("state=exclusion-failed \(detail) — our own covers are NOT excluded "
+                + "from capture, so a covered image can be uncovered again (fix: "
+                + "Capture.refreshExclusion; a stream restart re-applies it)")
+            var retries = 0
+            while true {
+                try? await Task.sleep(for: .seconds(Self.exclusionRetrySecs))
+                retries += 1
+                guard let applied = await attemptOnce() else { return }
+                if applied {
+                    let after = Int(Date().timeIntervalSince(failedAt))
+                    reportOnMain("state=exclusion-applied after \(retries) slow retries "
+                        + "(\(after)s after state=exclusion-failed)")
+                    return
+                }
+            }
         }
     }
 

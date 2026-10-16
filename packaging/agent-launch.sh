@@ -172,23 +172,73 @@ if ! log_dir_ok "$d"; then
       [ -n "$fallback" ] && log_dir_ok "$fallback" && d="$fallback"
     fi
     log_dir_note="sentry-screen: LOG_DIR_OWNER configured type=Directory,owner=$LOG_UID,mode=755-or-700, observed $observed_log_dir at $canonical_log_dir — not repairable by this account; logging to ${d:-/dev/null} and launching anyway (protection is never withheld over a log location; the root watchdog restores $canonical_log_dir within one pass)"
-    # Last resort: every `>>"$d/…"` below targets /dev/null/… and fails, which
-    # skips that one line only; the launch line uses launch_log() instead.
+    # Last resort: every log_append to "$d/…" below targets /dev/null/… and
+    # fails, which skips that one line only; the launch uses launch_log().
     [ -n "$d" ] || d="/dev/null"
   fi
 fi
+# LOG_FILE_SAFE_OPEN (review 2026-10-16). This account owns $d, so any file
+# name in it can be swapped for a FIFO at any moment, and a shell `>>` on a
+# FIFO with no reader blocks forever: one `mkfifo agent.out` kept the daemon
+# from ever starting. Every write into $d therefore goes through log_write,
+# which opens with O_NONBLOCK|O_NOFOLLOW (a readerless FIFO fails with ENXIO,
+# a symlink with ELOOP) and checks the OPEN descriptor is a regular file, so
+# no swap between a check and the open can reach it. A refused write returns
+# non-zero; it never blocks. `env -i` keeps PERL5OPT/PERL5LIB out (see
+# burst_state_read). The watchdog moves a non-regular agent.out, agent.err or
+# run.jsonl aside within one pass (watchdog.sh repair_log_files).
+log_write() {  # append|replace path; the bytes come on stdin
+  # shellcheck disable=SC2016  # perl source: its $ are perl's
+  /usr/bin/env -i /usr/bin/perl -e '
+use Fcntl;
+my ($how, $path) = @ARGV;
+my $flags = O_WRONLY | O_CREAT | O_NONBLOCK | O_NOFOLLOW
+          | ($how eq "replace" ? O_TRUNC : O_APPEND);
+sysopen(my $f, $path, $flags, 0644) or exit 1;
+-f $f or exit 2;
+local $/; my $bytes = <STDIN>;
+exit 0 unless defined $bytes && length $bytes;
+defined syswrite($f, $bytes) or exit 3;' "$1" "$2"
+}
+log_append() { log_write append "$1"; }
+log_replace() { log_write replace "$1"; }
 # The file the daemon's stdout/stderr go to at each launch: bash skips a
-# command whose redirect cannot open, so an unusable log file would silently
-# become a daemon that never starts. Checked per launch because the account
-# can change its own directory while the wrapper runs.
+# command whose redirect cannot open, and blocks on a FIFO, so an unusable log
+# file would become a daemon that never starts. Checked per launch because the
+# account can change its own directory while the wrapper runs. Prints the path
+# when it is absent or a regular non-symlink file, otherwise /dev/null.
 launch_log() {  # path
-  if [ ! -L "$1" ] && { : >>"$1"; } 2>/dev/null; then printf '%s\n' "$1"; return; fi
-  local note="sentry-screen: LOG_DIR_OWNER log file $1 cannot be opened or is a link — this launch's output goes to /dev/null and the daemon launches anyway (the watchdog repairs the folder; fix: remove $1)"
-  echo "$note" >>"$d/agent.err" 2>/dev/null || echo "$note" >&2
+  if log_append "$1" </dev/null; then printf '%s\n' "$1"; return; fi
+  local note="sentry-screen: LOG_DIR_OWNER log file $1 cannot be opened, is a link or is not a regular file — this launch's output goes to /dev/null and the daemon launches anyway (the watchdog moves it aside; fix: remove $1)"
+  echo "$note" | log_append "$d/agent.err" 2>/dev/null || echo "$note" >&2
   printf '/dev/null\n'
 }
+# The daemon's own launch reopens both files the same non-blocking way and
+# then execs it (same pid, same argv), so a swap after launch_log's check falls
+# back to /dev/null instead of blocking the shell's `>>`. O_NONBLOCK is cleared
+# before the exec; the daemon sees an ordinary O_APPEND descriptor.
+# The perl runs under `env -i "${SCRUB_ENV[@]}"` (tripwire ENV_SCRUB below),
+# which is both what keeps PERL5OPT out and the environment the daemon gets.
+launch_with_logs() {  # out err command...
+  # shellcheck disable=SC2016  # perl source: its $ are perl's
+  /usr/bin/env -i "${SCRUB_ENV[@]}" /usr/bin/perl -e '
+use Fcntl;
+sub safe { my $f;
+  if (sysopen($f, $_[0], O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK | O_NOFOLLOW, 0644) && -f $f) {
+    fcntl($f, F_SETFL, O_APPEND) or return undef; return $f }
+  return undef }
+my ($out, $err) = splice(@ARGV, 0, 2);
+for ([\*STDOUT, $out], [\*STDERR, $err]) {
+  my ($std, $path) = @$_;
+  my $f = safe($path);
+  if ($f) { open($std, ">&", $f) or exit 70 }
+  else { open($std, ">>", "/dev/null") or exit 70 }
+}
+exec { $ARGV[0] } @ARGV;
+exit 71;' "$@"
+}
 if [ -n "$log_dir_note" ]; then
-  echo "$log_dir_note" >>"$d/agent.err" 2>/dev/null || echo "$log_dir_note" >&2
+  echo "$log_dir_note" | log_append "$d/agent.err" 2>/dev/null || echo "$log_dir_note" >&2
 fi
 
 # --- Tripwire ENV_SCRUB (2026-09-11) ----------------
@@ -257,7 +307,7 @@ else
   echo "sentry-screen: tripwire ENV_SCRUB, configured HOME from the passwd database," \
        "observed none (id -P returned no home for user '${SCRUB_USER:-?}') —" \
        "launching with no HOME; Foundation falls back to getpwuid" \
-       "(fix: agent-launch.sh SCRUB_HOME)" >>"$d/agent.err"
+       "(fix: agent-launch.sh SCRUB_HOME)" | log_append "$d/agent.err"
 fi
 if [ -n "$SCRUB_USER" ]; then
   SCRUB_ENV+=(USER="$SCRUB_USER" LOGNAME="$SCRUB_USER")
@@ -267,7 +317,7 @@ if [ -n "$SCRUB_TMPDIR" ]; then
 else
   echo "sentry-screen: tripwire ENV_SCRUB, configured TMPDIR from getconf" \
        "DARWIN_USER_TEMP_DIR, observed none — launching with no TMPDIR, so" \
-       "temporary files land in /tmp (fix: agent-launch.sh SCRUB_TMPDIR)" >>"$d/agent.err"
+       "temporary files land in /tmp (fix: agent-launch.sh SCRUB_TMPDIR)" | log_append "$d/agent.err"
 fi
 # --- ENV_SCRUB evidence: a refused attempt must be LOUD ---------------------
 # Review repair 2026-09-11 (critic blocker 2). Layer 1 deletes the evidence
@@ -310,14 +360,14 @@ if [ -n "$scrub_dropped" ]; then
        "\`env -i\` so none of them reached it, and a production daemon honours no" \
        "SENTRY_* knob anyway (DevEnv.swift); names only, never values." \
        "(fix: whoever set them — \`launchctl unsetenv <name>\` in that domain;" \
-       "tripwire: agent-launch.sh ENV_SCRUB)" >>"$d/agent.err"
+       "tripwire: agent-launch.sh ENV_SCRUB)" | log_append "$d/agent.err"
   # Marker for watchdog.sh (report_wrapper_marker env-scrub): content is never
   # read there — it is in the protected account's own directory, so only its
   # existence, mtime and owner may be trusted. Rewritten on every launch that
   # drops something, so a repeat attempt moves the mtime and alerts again.
-  date -u +%Y-%m-%dT%H:%M:%SZ >"$ENV_SCRUB_MARKER" 2>/dev/null \
+  date -u +%Y-%m-%dT%H:%M:%SZ | log_replace "$ENV_SCRUB_MARKER" 2>/dev/null \
     || echo "sentry-screen: ENV_SCRUB marker $ENV_SCRUB_MARKER could not be written —" \
-            "the drop above is in this file only, not in alerts.log" >>"$d/agent.err"
+            "the drop above is in this file only, not in alerts.log" | log_append "$d/agent.err"
 else
   # Nothing ambient: clear a stale marker so the watchdog's next pass does not
   # keep a closed attempt alive. Removing it is not a "cleared" event worth an
@@ -568,7 +618,7 @@ burst_state_load() {
       echo "sentry-screen: budget RELAUNCH_BURST window state $BURST_STATE has" \
            "an unsafe non-regular entry (configured regular file, ${line:-observed=unknown})" \
            "— ignoring it and starting a fresh window;" \
-           "the next non-zero exit replaces it (fix: remove the entry)" >>"$d/agent.err"
+           "the next non-zero exit replaces it (fix: remove the entry)" | log_append "$d/agent.err"
       return 0
       ;;
     13)
@@ -577,14 +627,14 @@ burst_state_load() {
            "expected two non-negative" \
            "signed-64-bit-compatible integers) — starting a fresh window; the next" \
            "non-zero exit replaces it (fix: agent-launch.sh burst_state_read)" \
-           >>"$d/agent.err"
+           | log_append "$d/agent.err"
       return 0
       ;;
     *)
       echo "sentry-screen: budget RELAUNCH_BURST window state $BURST_STATE could not" \
            "be read safely (helper exit $read_rc, ${line:-observed=none}) — non-zero" \
            "exits start from an" \
-           "in-memory zero count (fix: agent-launch.sh burst_state_read)" >>"$d/agent.err"
+           "in-memory zero count (fix: agent-launch.sh burst_state_read)" | log_append "$d/agent.err"
       return 0
       ;;
   esac
@@ -594,7 +644,7 @@ burst_state_load() {
   if [ "$start" -gt "$now" ]; then
     echo "sentry-screen: budget RELAUNCH_BURST window state $BURST_STATE starts in the" \
          "future (observed $start > now $now; the clock moved) — starting a fresh window" \
-         >>"$d/agent.err"
+         | log_append "$d/agent.err"
     return 0
   fi
   if [ $((now - start)) -le "$BURST_WINDOW" ]; then
@@ -653,7 +703,7 @@ PERL
     echo "sentry-screen: budget RELAUNCH_BURST window state $BURST_STATE could not be" \
          "written safely (helper exit $save_rc) — non-zero exits stop accumulating" \
          "across wrapper launches (fix: agent-launch.sh burst_state_save and the" \
-         "per-uid log dir permissions)" >>"$d/agent.err"
+         "per-uid log dir permissions)" | log_append "$d/agent.err"
 }
 # Tripwire MIN_LIFETIME: exit 0 means "launchd stopped us" and is passed
 # through silently — which is exactly what hid the 2026-09-01 install outage:
@@ -679,7 +729,7 @@ MIN_LIFETIME=10
 # bounded at 4 x 5 MiB = 20 MiB per uid on top of run.jsonl's 200 MiB.
 AGENT_LOG_CAP_BYTES=5242880   # 5 MiB
 # The child holds both files open, so rotation is copy-then-truncate: the
-# daemon's fds were opened O_APPEND by the `>>` below, a truncate under them is
+# daemon's fds were opened O_APPEND by launch_with_logs, a truncate under them is
 # safe and the next write lands at the new end, whereas a `mv` would leave the
 # child writing into the moved inode until its next relaunch. Lines the child
 # writes between the cp and the truncate are lost; at the measured rate
@@ -689,19 +739,37 @@ AGENT_LOG_CAP_BYTES=5242880   # 5 MiB
 # ~100 B = 3 KB/s), which is 180 KB per 60 s check, 3.5 % of the cap.
 AGENT_LOG_CAP_CHECK_SECS=60
 cap_log() {  # file
-  local f="$1" size action
-  size="$(stat -f %z "$f" 2>/dev/null || echo 0)"
-  [ "$size" -ge "$AGENT_LOG_CAP_BYTES" ] || return 0
-  if cp -f "$f" "$f.1" 2>/dev/null; then
-    action="rotated to $f.1"
-  else
-    action="cp to $f.1 FAILED, truncated in place"
-  fi
-  # `2>` before `>` so a failed open is silent here and named below instead.
-  : 2>/dev/null >"$f" || action="$action; truncate FAILED, file still ${size} B"
+  # Through descriptors opened O_NONBLOCK|O_NOFOLLOW and checked to be
+  # regular files (LOG_FILE_SAFE_OPEN above): `cp` or `>` on a name this
+  # account swapped for a FIFO would block the wrapper. Prints nothing under
+  # the cap or for a non-regular file (the watchdog moves that one aside).
+  local result
+  # shellcheck disable=SC2016  # perl source: its $ are perl's
+  result="$(/usr/bin/env -i /usr/bin/perl -e '
+use Fcntl;
+my ($f, $cap) = @ARGV;
+sysopen(my $src, $f, O_RDWR | O_NONBLOCK | O_NOFOLLOW) or exit 0;
+-f $src or exit 0;
+my $size = -s _;
+exit 0 if $size < $cap;
+my $action = "copy to $f.1 FAILED, truncated in place";
+my $dst;
+if (sysopen($dst, "$f.1", O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK | O_NOFOLLOW, 0644) && -f $dst) {
+  my ($buf, $ok) = ("", 1);
+  while (1) {
+    my $n = sysread($src, $buf, 1 << 20);
+    if (!defined $n) { $ok = 0; last }
+    last if $n == 0;
+    if (!defined syswrite($dst, $buf)) { $ok = 0; last }
+  }
+  $action = "rotated to $f.1" if $ok;
+}
+truncate($src, 0) or $action .= "; truncate FAILED, file still $size B";
+print "$size B in $f, $action";' "$1" "$AGENT_LOG_CAP_BYTES")"
+  [ -n "$result" ] || return 0
   echo "sentry-screen: budget AGENT_LOG_CAP, limit ${AGENT_LOG_CAP_BYTES} B," \
-       "observed ${size} B in $f — $action" \
-       "(fix: agent-launch.sh AGENT_LOG_CAP_BYTES)" >>"$d/agent.err"
+       "observed $result" \
+       "(fix: agent-launch.sh AGENT_LOG_CAP_BYTES)" | log_append "$d/agent.err"
 }
 # Tripwire CAPPER_STOP_TRIES x CAPPER_STOP_INTERVAL: how long the teardown
 # below keeps re-sending pkill to the checker's `sleep`. One pkill can miss: if
@@ -729,7 +797,7 @@ if [ -e "$BURST_MARKER" ] || [ -L "$BURST_MARKER" ]; then
   echo "sentry-screen: budget RELAUNCH_BURST — a previous wrapper tripped it;" \
        "moved $BURST_MARKER to $BURST_MARKER.last and launching anyway" \
        "(the marker is evidence, never a gate — receipt in this file;" \
-       "the exits and the count are above in this log)" >>"$d/agent.err"
+       "the exits and the count are above in this log)" | log_append "$d/agent.err"
 fi
 
 child=""
@@ -779,7 +847,7 @@ handoff_armed() {
          "with a verificationStartedAt timestamp, observed the flag with none in" \
          "$SETTINGS — treating the onboarding handoff as NOT armed, so this TERM" \
          "stops the job (fix: the daemon settles the flag —" \
-         "UIOnboardingState.recordVerificationFailure)" >>"$d/agent.err"
+         "UIOnboardingState.recordVerificationFailure)" | log_append "$d/agent.err"
     return 1
   fi
   started="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null || true)"
@@ -787,7 +855,7 @@ handoff_armed() {
     ''|*[!0-9]*)
       echo "sentry-screen: tripwire HANDOFF_MAX_AGE, configured an ISO 8601 UTC" \
            "verificationStartedAt, observed \"$ts\" in $SETTINGS — unparseable," \
-           "treating the handoff as NOT armed (fix: inspect $SETTINGS)" >>"$d/agent.err"
+           "treating the handoff as NOT armed (fix: inspect $SETTINGS)" | log_append "$d/agent.err"
       return 1
       ;;
   esac
@@ -797,14 +865,14 @@ handoff_armed() {
          "observed ${age}s since verificationStartedAt=$ts — the onboarding" \
          "handoff flag is STUCK; treating this TERM as a real stop" \
          "(fix: agent-launch.sh HANDOFF_MAX_AGE, or the daemon path that never" \
-         "settled verificationPending in $SETTINGS)" >>"$d/agent.err"
+         "settled verificationPending in $SETTINGS)" | log_append "$d/agent.err"
     return 1
   fi
   return 0
 }
 forward() {
   if handoff_armed; then
-    echo "sentry-screen: TERM during armed onboarding handoff (Quit & Reopen) — not stopping, child relaunches on exit 7" >>"$d/agent.err"
+    echo "sentry-screen: TERM during armed onboarding handoff (Quit & Reopen) — not stopping, child relaunches on exit 7" | log_append "$d/agent.err"
   else
     stopping=1
   fi
@@ -837,9 +905,8 @@ while :; do
   # stays exactly --config/--log/--ttl; agent-launch-test.sh asserts both.
   launch_out="$(launch_log "$d/agent.out")"
   launch_err="$(launch_log "$d/agent.err")"
-  /usr/bin/env -i "${SCRUB_ENV[@]}" \
-    "$BIN" --config "$SUPPORT/config.json" --log "$d/run.jsonl" --ttl 0 \
-    >>"$launch_out" 2>>"$launch_err" &
+  launch_with_logs "$launch_out" "$launch_err" \
+    "$BIN" --config "$SUPPORT/config.json" --log "$d/run.jsonl" --ttl 0 &
   child=$!
   child_started_at=$(utc_timestamp)
   child_started_epoch=$(date +%s)
@@ -855,7 +922,7 @@ while :; do
     echo "sentry-screen: relaunch_receipt exit=$pending_relaunch_exit" \
          "oldPID=$pending_old_pid oldStartedAt=$pending_old_started_at" \
          "oldExitedAt=$pending_old_exited_at newPID=$child" \
-         "newStartedAt=$child_started_at" >>"$d/agent.err"
+         "newStartedAt=$child_started_at" | log_append "$d/agent.err"
     pending_relaunch_exit=""
     pending_old_pid=""
     pending_old_started_at=""
@@ -882,7 +949,7 @@ while :; do
   if kill -0 "$capper" 2>/dev/null; then
     echo "sentry-screen: tripwire CAPPER_STOP_TRIES, limit ${CAPPER_STOP_TRIES} x ${CAPPER_STOP_INTERVAL}s," \
          "observed log-cap checker pid $capper still alive — waiting for it; the relaunch is" \
-         "delayed until it exits (fix: agent-launch.sh CAPPER_STOP_TRIES)" >>"$d/agent.err"
+         "delayed until it exits (fix: agent-launch.sh CAPPER_STOP_TRIES)" | log_append "$d/agent.err"
   fi
   wait "$capper" 2>/dev/null
   capper=""
@@ -897,7 +964,7 @@ while :; do
       echo "sentry-screen: tripwire MIN_LIFETIME, limit ${MIN_LIFETIME}s, observed ${lifetime}s —" \
            "daemon pid $exited_child exited 0 without a stop from this wrapper" \
            "(fix: verify the installed binary and its signature: codesign -dv" \
-           "\"$SUPPORT/SentryScreen.app\"; reinstall with packaging/install.sh)" >>"$d/agent.err"
+           "\"$SUPPORT/SentryScreen.app\"; reinstall with packaging/install.sh)" | log_append "$d/agent.err"
       exit 1
     fi
   fi
@@ -917,8 +984,8 @@ while :; do
            "exits 1; launchd starts a fresh one after its ThrottleInterval (~10s)," \
            "which launches the daemon anyway (the marker is evidence, never a gate" \
            "— receipt in this file), so protection resumes unless the daemon keeps failing" \
-           "(fix: agent-launch.sh RELAUNCH_BURST)" >>"$d/agent.err"
-      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) RELAUNCH_BURST tripped: $burst_count non-zero exits in ${BURST_WINDOW}s" >"$BURST_MARKER"
+           "(fix: agent-launch.sh RELAUNCH_BURST)" | log_append "$d/agent.err"
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) RELAUNCH_BURST tripped: $burst_count non-zero exits in ${BURST_WINDOW}s" | log_replace "$BURST_MARKER"
       # The trip CONSUMES the window. There is no cooldown to be "the
       # enforcement from here" (removed 2026-09-11), which makes this `rm`
       # load-bearing rather than tidy: without it the next wrapper would load a
@@ -949,7 +1016,7 @@ while :; do
       echo "sentry-screen: abnormal exit $rc after ${lifetime}s — counted" \
            "$burst_count/$RELAUNCH_BURST toward budget RELAUNCH_BURST in its" \
            "${BURST_WINDOW}s window; this cycle is $burst_verdict" \
-           "(fix: agent-launch.sh RELAUNCH_BURST)" >>"$d/agent.err"
+           "(fix: agent-launch.sh RELAUNCH_BURST)" | log_append "$d/agent.err"
       exit "$rc"
       ;;
   esac
@@ -962,5 +1029,5 @@ while :; do
     pending_old_started_at=$exited_child_started_at
     pending_old_exited_at=$exited_child_exited_at
   fi
-  echo "sentry-screen: relaunch exit $rc (ttl/tcc-reeval/quit-reopen) — relaunching ($burst_count/$RELAUNCH_BURST in window)" >>"$d/agent.err"
+  echo "sentry-screen: relaunch exit $rc (ttl/tcc-reeval/quit-reopen) — relaunching ($burst_count/$RELAUNCH_BURST in window)" | log_append "$d/agent.err"
 done

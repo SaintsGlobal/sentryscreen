@@ -147,24 +147,76 @@ for uid in $UIDS; do stamp_changed "$uid.console" live || true; done
 #   * anything else (a symlink, a file, another owner, an unreadable shape):
 #     renamed aside to $LOG_ROOT/.<uid>.quarantine.<epoch>.<pid> — rename(2)
 #     on the entry itself, never following it, and never deleted as root —
-#     then recreated root-side and handed to the uid (the name is root-owned
-#     in the 1777 sticky root between the mkdir and the chown, so it cannot be
-#     swapped), and the agent is restarted so it writes there again.
+#     then recreated root-side with mode 0755 and handed to the uid with
+#     `chown -h` as the LAST root operation on that path (the name is
+#     root-owned in the 1777 sticky root until the chown, so it cannot be
+#     swapped before it; once the uid owns it, root never touches the path
+#     again — a chmod after the chown followed a swapped-in symlink, review
+#     2026-10-16), and the agent is restarted so it writes there again;
+#   * inside an accepted directory, an agent.out, agent.err or run.jsonl that
+#     is not a regular file (a FIFO blocks whoever opens it, a symlink
+#     redirects the writes) is renamed aside through a no-follow directory
+#     handle, never followed or deleted, and the agent is restarted so it
+#     recreates a regular file (repair_log_files).
 # Every repair is a tamper event and an ALERT; neither is a `failed` pass
 # unless the repair itself fails. Honest limit: repeated tampering can cost a
 # restart (a few seconds unfiltered) per 60 s pass in the second case; each
 # one is in the ledger and the parent's email.
+# The three files the agent and daemon append to. Run as root against a
+# directory the uid owns, so the directory is opened once with
+# O_DIRECTORY|O_NOFOLLOW and every lstat and rename is relative to that handle
+# (fchdir): swapping the directory name cannot point a root rename elsewhere.
+# `env -i` keeps PERL5OPT/PERL5LIB from the protected session out.
+repair_log_files() {  # uid
+  local uid="$1" dir="$LOG_ROOT/$1" result verb name type aside moved=0
+  result="$(/usr/bin/env -i /usr/bin/perl - "$dir" "$uid" "$(date +%s)" <<'LOG_FILES_PERL'
+use strict;
+use warnings;
+use Fcntl qw(O_RDONLY O_NOFOLLOW O_DIRECTORY :mode);
+my ($dir, $uid, $now) = @ARGV;
+sysopen(my $d, $dir, O_RDONLY | O_NOFOLLOW | O_DIRECTORY) or exit 0;
+my @s = stat($d);
+exit 0 unless @s && $s[4] == $uid;
+chdir $d or exit 0;
+for my $name ('agent.out', 'agent.err', 'run.jsonl') {
+    my @l = lstat($name) or next;
+    next if S_ISREG($l[2]);
+    my $type = S_ISLNK($l[2]) ? 'symlink' : S_ISFIFO($l[2]) ? 'fifo'
+             : S_ISDIR($l[2]) ? 'directory' : S_ISSOCK($l[2]) ? 'socket'
+             : (S_ISCHR($l[2]) || S_ISBLK($l[2])) ? 'device' : 'non-regular';
+    my $aside = ".$name.tamper.$now.$$";
+    if (rename($name, $aside)) { print "moved $name $type $aside\n" }
+    else { print "failed $name $type -\n" }
+}
+LOG_FILES_PERL
+)"
+  while read -r verb name type aside; do
+    [ -n "$aside" ] || continue
+    if [ "$verb" = moved ]; then
+      alert ALERT "per-uid log file $dir/$name configured=type=Regular,no-symlink observed=type=$type — moved aside to $dir/$aside; restarting the agent so it writes a regular file again (tamper: log-file-repaired)"
+      moved=1
+    else
+      alert ALERT "per-uid log file $dir/$name configured=type=Regular,no-symlink observed=type=$type — could not be moved aside; the agent logs that stream to /dev/null (fix: remove $dir/$name as an administrator)"
+      failed=1
+    fi
+  done <<<"$result"
+  if [ "$moved" = 1 ] && [ "${SENTRY_WATCHDOG_DEV:-0}" != "1" ]; then
+    launchctl kickstart -k "gui/$uid/$LABEL" 2>>"$ALERTS" \
+      || { alert ALERT "kickstart -k FAILED for gui/$uid after the log file repair"; failed=1; }
+  fi
+}
 repair_log_dir() {  # uid
   local uid="$1" dir="$LOG_ROOT/$1" have q
   [ -e "$dir" ] || [ -L "$dir" ] || return 0   # absent: the wrapper creates it
   # lstat, never stat: a symlink must report itself, not its target.
   have="$(stat -f 'type=%HT,owner=%u,mode=%Lp' "$dir" 2>/dev/null || echo 'type=unreadable,owner=?,mode=?')"
   case "$have" in
-    "type=Directory,owner=$uid,mode=755" | "type=Directory,owner=$uid,mode=700") return 0 ;;
+    "type=Directory,owner=$uid,mode=755" | "type=Directory,owner=$uid,mode=700") repair_log_files "$uid"; return 0 ;;
     "type=Directory,owner=$uid,"*)
       if /usr/bin/perl -e 'use Fcntl; sysopen(my $d, $ARGV[0], O_RDONLY | O_NOFOLLOW | O_DIRECTORY) or exit 1;
           my @s = stat($d); exit 2 unless @s && $s[4] == $ARGV[1]; chmod(0755, $d) == 1 or exit 3; exit 0' "$dir" "$uid"; then
         alert ALERT "per-uid log directory $dir configured=type=Directory,owner=$uid,mode=755-or-700 observed=$have — mode restored to 755 by the watchdog; protection was not interrupted (tamper: log-folder-repaired)"
+        repair_log_files "$uid"
         return 0
       fi ;;
   esac
@@ -174,7 +226,9 @@ repair_log_dir() {  # uid
     failed=1
     return 0
   fi
-  if ! mkdir "$dir" 2>/dev/null || ! chown -h "$uid" "$dir" 2>/dev/null || ! chmod 755 "$dir" 2>/dev/null; then
+  # Mode first, ownership last: nothing as root may touch "$dir" by name after
+  # the uid owns it (header above).
+  if ! mkdir -m 755 "$dir" 2>/dev/null || ! chown -h "$uid" "$dir" 2>/dev/null; then
     alert ALERT "per-uid log directory $dir was moved aside to $q (observed=$have) but could not be recreated for uid $uid — the agent is logging to its temporary fallback (fix: inspect $LOG_ROOT as an administrator)"
     failed=1
     return 0

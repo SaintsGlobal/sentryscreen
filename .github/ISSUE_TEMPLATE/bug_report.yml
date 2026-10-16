@@ -21,7 +21,7 @@ body:
     id: version
     attributes:
       label: SentryScreen version
-      description: Settings › App, for example 0.4.0 (27).
+      description: Settings › App, for example 0.4.1 (28).
     validations:
       required: true
   - type: input

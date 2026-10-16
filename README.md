@@ -101,7 +101,10 @@ cover. [docs/spec.md](docs/spec.md) has the full pipeline (capture â†’ detect â†
 ## Privacy
 
 - Everything runs on the Mac. Screen frames go to a Core ML model in memory and
-  are never stored or sent.
+  are never sent. The installed app never stores them. The exception is a
+  developer command-line option you run yourself: `--dev-crop-dir`, used to
+  build training data, saves crops of what was detected to the folder you name.
+  The installed app never uses it.
 - SentryScreen makes **one** kind of network request: a diagnostic report that the
   Mac's owner reviews in full and chooses to send. It is never sent automatically,
   it carries no screen content, and it is a one-way send with no User-Agent header.
@@ -179,8 +182,10 @@ after each rebuild. With an Apple Development certificate, build with
 `SENTRY_TEAM_ID` to your team. Developer ID signing and notarization are optional:
 see the header of `packaging/build-pkg.sh` and `packaging/notarize-pkg.sh`.
 
-Without a package, `packaging/bundle.sh` followed by `sudo packaging/install.sh`
-installs the same layout from the build directory.
+Without a package, `packaging/bundle.sh` followed by
+`sudo SENTRY_ALLOW_ADHOC_INSTALL=1 packaging/install.sh` installs the same layout
+from the build directory. The variable allows an ad-hoc signed build, which the
+install preflight refuses otherwise; leave it out for a Developer ID build.
 </details>
 
 ## Uninstall
