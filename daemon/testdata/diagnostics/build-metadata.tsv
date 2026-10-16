@@ -1,0 +1,8 @@
+# sentryscreen-build-metadata-v1
+schema_version	1
+source_commit	5a682f1c
+app_signing_mode_requested	development
+package_mode	development
+build_flavor	staging
+version	0.3.0
+build	7

@@ -1,0 +1,7 @@
+# sentryscreen-model-identity-v1
+model_id	yolox-s-v8-ep50-fp16
+approval_status	approved
+payload_path	/Library/Application Support/SentryScreen/model/yolox-s-v8.mlmodelc
+file_count	3
+total_size	18345678
+sha256	0000000000000000000000000000000000000000000000000000000000000000

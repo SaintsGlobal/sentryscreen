@@ -1,0 +1,20 @@
+{"event":"policy","ts":"2026-09-08T16:15:44Z","info":"effective=standard cover=curtain"}
+{"event":"ui","ts":"2026-09-08T16:15:44Z","info":"session uid=501 user=parent(501) admin=true"}
+{"event":"retired","ts":"2026-09-08T16:15:44Z","info":"state=active"}
+{"suppressed":253,"inferP50":12.8,"state":"active","frames":253,"fps":4.2,"counters":{"framesDropped":6},"ts":"2026-09-08T16:16:45Z","rssBytes":86245376,"activeCovers":0,"event":"summary"}
+{"event":"curtain","ts":"2026-09-08T16:17:00Z","info":"drop window 28331 app=Safari latency 41 ms"}
+{"event":"curtain","ts":"2026-09-08T16:17:05Z","info":"lift (hold 5.0s, 146 clean frames) window 28331"}
+{"event":"curtain","ts":"2026-09-08T16:17:06Z","info":"drop window 28332 app=Chrome"}
+{"event":"curtain","ts":"2026-09-08T16:17:07Z","info":"handoff window 28332 -> 28333"}
+{"event":"curtain","ts":"2026-09-08T16:17:08Z","info":"ghost-ban 30 s window 28333"}
+{"event":"curtain","ts":"2026-09-08T16:17:09Z","info":"parole window 28333"}
+{"event":"detect","ts":"2026-09-08T16:17:10Z","info":"class=EXPOSED_X box=[0,0,10,10] score=0.9"}
+{"event":"tier","ts":"2026-09-08T19:29:45Z","info":"budget perfInferBudget limit 33.3 ms observed inferP95 112.9 ms"}
+{"event":"capture","ts":"2026-09-08T19:30:00Z","info":"capture lost — stream stopped"}
+{"event":"pause","ts":"2026-09-08T19:31:00Z","info":"timed 15 min by parent(501)"}
+{"event":"resume","ts":"2026-09-08T19:46:00Z","info":"pause expired"}
+{"event":"held","ts":"2026-09-08T19:47:00Z","info":"activation required"}
+{"event":"onboarding","ts":"2026-09-08T19:48:00Z","info":"confirmation=acknowledged pid=900"}
+{"event":"uninstall","ts":"2026-09-08T19:49:00Z","info":"cancelled"}
+{"event":"sched","ts":"2026-09-08T19:49:30Z","info":"tick"}
+{"suppressed":10,"inferP50":11.1,"state":"active","frames":30,"fps":4.0,"counters":{"framesDropped":0},"ts":"2026-09-08T19:50:00Z","rssBytes":86000000,"activeCovers":1,"event":"summary"}

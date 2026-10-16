@@ -1,0 +1,28 @@
+{
+  "retiredState" : {
+    "checkedAt" : 1757445355,
+    "state" : "active"
+  },
+  "onboarding" : {
+    "completedAt" : "2026-09-08T16:20:00Z",
+    "schemaVersion" : 1,
+    "successShownAt" : "2026-09-08T16:20:05Z",
+    "verificationPending" : false,
+    "verificationRequestID" : null,
+    "verificationStartedAt" : null
+  },
+  "pause" : {
+    "at" : "2026-09-08T19:31:00Z",
+    "bootSession" : null,
+    "by" : "parent(501)",
+    "mode" : "none",
+    "until" : null,
+    "untilUptime" : null
+  },
+  "policyOverride" : null,
+  "showMenuBarIcon" : true,
+  "unknownState" : "current",
+  "updatedAt" : "2026-09-08T19:31:00Z",
+  "updatedBy" : "parent(501)",
+  "version" : 2
+}

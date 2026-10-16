@@ -1,0 +1,2 @@
+2026-09-09T19:35:55Z ALERT sentry-screen[uid 501]: capture lost — stream stopped (code 0)
+2026-09-09T19:36:10Z INFO sentry-screen[uid 501]: capture restored

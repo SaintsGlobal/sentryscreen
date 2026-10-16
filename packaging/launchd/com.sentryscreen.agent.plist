@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Production LaunchAgent template (B2). Installed by install.sh into
+     /Library/LaunchAgents so it loads in EVERY user's session — current
+     and future accounts — with no per-user setup (the Screen Recording grant is
+     machine-wide: system TCC.db, MEASURED 2026-08-22).
+
+     B4 (2026-09-01): KeepAlive=true and no TTL on installed builds. The
+     staged rollout (SPEC §8.3) shipped KeepAlive=false + a 24 h config TTL
+     until the watchdog, panic path and uninstall were verified on the
+     target machine; those Receipts exist (agent-launch.sh header). The
+     TTL is disabled by the wrapper's `--ttl 0`, not by editing config.json,
+     so a preserved config from the staged era is harmless. KeepAlive=true
+     makes launchd relaunch the wrapper itself when a child kills it (their
+     own uid can), bounded by launchd's 10 s ThrottleInterval; the root
+     watchdog stays as the backstop for a job booted OUT of the domain,
+     which KeepAlive cannot undo. A booted-out job (uninstall.sh, or
+     launchctl bootout) is not relaunched by KeepAlive — removal still
+     works the same way. -->
+<!-- Receipt for KeepAlive=true safety: the daemon's relaunch codes 75/7/137
+     are handled INSIDE the wrapper (its RELAUNCH_BURST tripwire), so launchd
+     only ever sees the wrapper exit — never a fast daemon loop.
+     CORRECTED 2026-09-11: this receipt used to read "RELAUNCH_BURST
+     tripwire + 900 s cooldown marker". That cooldown is GONE — gating a launch
+     on RELAUNCH_BURST.tripped was an off switch the protected account could
+     hold with `touch`, since the marker lives in that account's own log
+     directory. The marker is now evidence only (watchdog.sh ALERTs on it), and
+     launchd's default ThrottleInterval — 10 s between starts of this job — is
+     the ONLY thing pacing a burst trip: the wrapper exits 1 and the next
+     wrapper launchd starts launches the daemon anyway. A trip therefore costs
+     one wrapper restart, not 900 s of no protection. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>com.sentryscreen.agent</string>
+	<!-- Launched through agent-launch.sh so logs land in a per-uid
+	     subdir (shared files broke the second account — see the wrapper). -->
+	<key>ProgramArguments</key>
+	<array>
+        <!-- -p suppresses BASH_ENV and inherited shell functions before
+             the wrapper can reset PATH. MEASURED 2026-09-12 with a harmless
+             startup-file marker; covered by agent-launch-test.sh. It does not
+             grant privileges: this LaunchAgent still runs as the session uid. -->
+		<string>/bin/bash</string>
+		<string>-p</string>
+		<string>/Library/Application Support/SentryScreen/agent-launch.sh</string>
+	</array>
+	<!-- macOS 13+ Login Items & Extensions and the "App Background Activity"
+	     notification name the item by its ASSOCIATED bundle, not by the signing
+	     certificate. Without this key the individual Developer ID account
+	     surfaced the developer's personal name ("Software from <name> can run
+	     in the background", observed 2026-09-08, build 6). The
+	     app bundle carries the same Team ID, which is the association rule. -->
+	<key>AssociatedBundleIdentifiers</key><string>com.sentryscreen.agent</string>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+</dict>
+</plist>

@@ -1,0 +1,23 @@
+SentryScreen
+Copyright (C) 2026 SentryScreen, LLC
+
+SentryScreen is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation. See LICENSE for the full text. It comes with
+ABSOLUTELY NO WARRANTY.
+
+Model weights
+  model/weights/yolox_50ep_v8_ep50_fp16.mlpackage is licensed under AGPL-3.0.
+  It was trained with pseudo-labels produced by NudeNet v3.4
+  (https://github.com/notAI-tech/NudeNet, AGPL-3.0). NudeNet weights are not
+  included in this repository. The training dataset is not distributed.
+
+YOLOX
+  The detector architecture and its COCO base weights come from YOLOX
+  (https://github.com/Megvii-BaseDetection/YOLOX),
+  Copyright (c) 2021-2022 Megvii Inc., licensed under the Apache License,
+  Version 2.0. The full notice is in packaging/THIRD-PARTY.txt.
+
+Shantell Sans
+  The title font is Shantell Sans, licensed under the SIL Open Font License
+  1.1. The full notice is in packaging/THIRD-PARTY.txt.

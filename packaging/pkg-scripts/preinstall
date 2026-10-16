@@ -1,0 +1,18 @@
+#!/bin/bash
+# Installer.app pre-payload step. Records whether the app being replaced was
+# ad-hoc signed, so configure-install.sh can reset its stale Screen Recording
+# row even when the new build is Developer ID signed (see the tcc-reset
+# Receipt there). No app installed yet: nothing to record.
+set -euo pipefail
+SUPPORT="/Library/Application Support/SentryScreen"
+MARKER="$SUPPORT/.previous-app-adhoc"
+rm -f "$MARKER" || true
+if [ -d "$SUPPORT/SentryScreen.app" ] && [ ! -L "$SUPPORT" ] \
+  && /usr/bin/codesign -dv "$SUPPORT/SentryScreen.app" 2>&1 | grep '^Signature=adhoc$' >/dev/null; then
+  if : > "$MARKER"; then
+    echo "preinstall: previous-app signature=adhoc marker=$MARKER"
+  else
+    echo "preinstall: previous-app signature=adhoc marker=write-failed path=$MARKER remediation=tccutil-reset-ScreenCapture-com.sentryscreen.agent" >&2
+  fi
+fi
+exit 0

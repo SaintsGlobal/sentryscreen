@@ -1,0 +1,8 @@
+# sentryscreen-model-identity-v1
+schema_version	1
+model_id	yolox_50ep_v8_ep50_fp16
+approval_status	owner-approved
+payload_path	yolox_50ep_v8_ep50_fp16.mlpackage
+file_count	3
+total_size	18307879
+sha256	f7ac0dac10e789103ada7094c3981998ca3b39bac2a3214e281ae010e390454a

@@ -1,0 +1,17 @@
+# Model weights: only the shipped package is committed.
+model/weights/*
+!model/weights/yolox_50ep_v8_ep50_fp16.mlpackage/
+*.mlmodelc/
+model/.venv/
+model/training/.venv/
+model/training/third_party/
+model/training/runs/
+model/training/data/
+model/training/dataset/
+model/training/*.mlpackage/
+*.pth
+*.onnx
+__pycache__/
+daemon/.build/
+packaging/out/
+.DS_Store

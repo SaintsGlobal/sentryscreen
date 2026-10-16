@@ -1,0 +1,18 @@
+config /Library/Application Support/SentryScreen/config.json: loaded
+ui-state: unknown keys ["retiredState"] preserved
+ui: session uid=501 user=parent(501) admin=true — parent controls eligible after onboarding
+curtain: drop window 28331 app=Safari
+curtain: lift (hold 5.0s, 146 clean frames) window 28331
+detect: region class=EXPOSED_X box=[1,2,3,4] score=0.91
+onboarding: permission-setup state=armed requestID=6B0C oldPID=812
+WARNING: tier: budget perfInferBudget, limit 33.3 ms, observed inferP95 42.9 ms
+capture: alerts.log ALERT line written: /Library/Logs/SentryScreen/501/alerts.log
+pin-recovery: prompt shown
+pin-authority: parent directory validated
+uninstall: keep=settings requested by parent(501)
+ui-queue: drained 1 script
+sentry-screen: TERM during armed onboarding handoff
+relay: relayed line
+hotkey-record: this prefix is not in the allowlist
+region: cover 3 classes EXPOSED_X
+secret: token TKN-ABCDE-FGHJK-MNPQR-STVWX written to /Users/parent/state

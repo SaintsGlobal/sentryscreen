@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in SentryScreen does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never attach explicit images or screen recordings of explicit content.** Describe what happened in words, or attach a diagnostic report instead (Settings › App › Review a diagnostic report…).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: input
+    id: version
+    attributes:
+      label: SentryScreen version
+      description: Settings › App, for example 0.4.0 (27).
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and macOS version
+      description: For example "MacBook Air M2, macOS 27.0" or "Intel MacBook Pro, macOS 15.6".
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic report or logs (optional)
+      description: Paste the reviewed report or relevant log lines. Check it holds nothing you do not want public.
+      render: text

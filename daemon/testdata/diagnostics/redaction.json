@@ -1,0 +1,47 @@
+[
+  {
+    "in": "config /Users/parent/dev/sentryscreen/config.json: loaded",
+    "out": "config /Users/…/dev/sentryscreen/config.json: loaded"
+  },
+  {
+    "note": "known limit: a space ends the redacted run (macOS short names cannot contain spaces; design §8)",
+    "in": "path /Users/jane doe/Library and /Users/x",
+    "out": "path /Users/… doe/Library and /Users/…"
+  },
+  {
+    "in": "\"procPath\" : \"\\/Users\\/parent\\/dev\\/x\"",
+    "out": "\"procPath\" : \"\\/Users\\/…\\/dev\\/x\""
+  },
+  {
+    "in": "ui: session uid=501 user=parent(501) admin=true",
+    "out": "ui: session uid=501 user=user(501) admin=true"
+  },
+  {
+    "in": "pause by kidmac(1002) at noon",
+    "out": "pause by user(1002) at noon"
+  },
+  {
+    "in": "mail parent@example.com and Some.One+tag@example.co.uk",
+    "out": "mail <email> and <email>"
+  },
+  {
+    "in": "a@b.io(501) trailing",
+    "out": "<email>(501) trailing"
+  },
+  {
+    "in": "exit(7) inside MIN_LIFETIME; window 31238 lift (hold 5.0s)",
+    "out": "exit(7) inside MIN_LIFETIME; window 31238 lift (hold 5.0s)"
+  },
+  {
+    "in": "line with a NUL\u0000inside and one at the end\u0000",
+    "out": "line with a NULinside and one at the end"
+  },
+  {
+    "in": "\"crashReporterKey\" : \"8f0c2e1a5b7d4c3e9a1b2c3d4e5f60718293a4b5\", \"bootSessionUUID\":\"1E2D3C4B-5A69-4788-9A0B-1C2D3E4F5A6B\"",
+    "out": "\"crashReporterKey\" : \"<redacted>\", \"bootSessionUUID\" : \"<redacted>\""
+  },
+  {
+    "in": "nothing to redact: capture lost — stream stopped (code 0)",
+    "out": "nothing to redact: capture lost — stream stopped (code 0)"
+  }
+]

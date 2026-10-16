@@ -1,0 +1,19 @@
+{"app_name":"sentry-screen","timestamp":"2026-09-03 06:25:14.00 -0400","app_version":"0.3.0","slice_uuid":"0000","build_version":"7","platform":1,"bundleID":"com.sentryscreen.agent","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.0 (25A123)","roots_installed":0,"name":"sentry-screen","incident_id":"ABCD-1234"}
+{
+  "uptime" : 12000,
+  "procRole" : "Background",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "Mac14,13",
+  "crashReporterKey" : "8f0c2e1a5b7d4c3e9a1b2c3d4e5f60718293a4b5",
+  "bootSessionUUID" : "1E2D3C4B-5A69-4788-9A0B-1C2D3E4F5A6B",
+  "procLaunch" : "2026-09-03 06:24:50.0000 -0400",
+  "procPath" : "\/Users\/parent\/dev\/sentryscreen\/daemon\/.build\/sentry-screen",
+  "cwd" : "\/Users\/parent",
+  "exception" : {"codes":"0x0000000000000001, 0x0000000000000000","rawCodes":[1,0],"type":"EXC_BAD_ACCESS","signal":"SIGSEGV"},
+  "termination" : {"flags":0,"code":11,"namespace":"SIGNAL","indicator":"Segmentation fault: 11"},
+  "faultingThread" : 0,
+  "notes" : "owner parent@example.com key SS1-ABCDE-FGHJK-MNPQR-STVWX",
+  "threads" : [{"triggered":true,"id":1234,"frames":[{"imageOffset":100,"symbol":"main","imageIndex":0}]}]
+}

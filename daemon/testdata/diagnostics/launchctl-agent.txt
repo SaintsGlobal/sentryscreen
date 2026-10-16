@@ -1,0 +1,53 @@
+gui/501/com.sentryscreen.agent = {
+	active count = 1
+	path = /Library/LaunchAgents/com.sentryscreen.agent.plist
+	type = LaunchAgent
+	state = running
+
+	program = /Library/Application Support/SentryScreen/agent-launch.sh
+	arguments = {
+		/Library/Application Support/SentryScreen/agent-launch.sh
+	}
+
+	working directory = /Users/parent
+	stdout path = /dev/null
+	stderr path = /dev/null
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.abc/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		XPC_SERVICE_NAME => com.sentryscreen.agent
+	}
+
+	domain = gui/501 [100005]
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 3
+	pid = 812
+	immediate reason = speculative
+	forks = 2
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = 7
+
+	event triggers = {
+	}
+
+	resource coalition = {
+		state = active
+		pid = 812
+		last exit code = 0
+	}
+
+	jetsam coalition = {
+		state = active
+	}
+}

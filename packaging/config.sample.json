@@ -1,0 +1,10 @@
+{
+  "model": "/Library/Application Support/SentryScreen/@SENTRY_MODEL_FILE@",
+  "cover": "curtain",
+  "logMode": "lean",
+  "quiet": true,
+  "log": "/Library/Logs/SentryScreen/run.jsonl",
+  "captureLoss": "banner",
+  "ttl": 0,
+  "tuning": {}
+}

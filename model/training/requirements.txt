@@ -1,0 +1,15 @@
+# Python 3.12. YOLOX itself is a separate checkout (see model/README.md).
+torch==2.13.0
+torchvision==0.28.0
+numpy==2.3.5
+opencv-python-headless==5.0.0.93
+pillow==12.3.0
+pycocotools==2.0.11
+loguru==0.7.3
+tabulate==0.10.0
+thop==0.1.1.post2209072238
+psutil==7.2.2
+tqdm==4.70.0
+coremltools==9.0
+# Optional teacher for pseudo_label.py (AGPL-3.0):
+# nudenet==3.4.2

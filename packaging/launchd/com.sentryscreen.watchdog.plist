@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Root watchdog LaunchDaemon template (B3). One pass per interval:
+     verify files, re-bootstrap missing agent jobs, append ALERTs. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>com.sentryscreen.watchdog</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Library/Application Support/SentryScreen/watchdog.sh</string>
+	</array>
+	<!-- macOS 13+ Login Items & Extensions and the "App Background Activity"
+	     notification name the item by its ASSOCIATED bundle, not by the signing
+	     certificate. Without this key the individual Developer ID account
+	     surfaced the developer's personal name ("Software from <name> can run
+	     in the background", observed 2026-09-08, build 6). The
+	     app bundle carries the same Team ID, which is the association rule. -->
+	<key>AssociatedBundleIdentifiers</key><string>com.sentryscreen.agent</string>
+	<key>RunAtLoad</key><true/>
+	<!-- 60 s interval. DERIVED: the watchdog's job is bounding how long a
+	     tampered session stays unfiltered; one minute matches the curtain
+	     pipeline's own summary cadence and costs two launchctl prints per
+	     live session (gui domain, then job) plus one per stale console row
+	     per minute — unmeasurable next to the daemon itself. Not
+	     shorter: each pass appends to alerts.log on repair, and a 1 s loop
+	     against a genuinely broken install would flood it. -->
+	<key>StartInterval</key><integer>60</integer>
+	<!-- Recovery must start even if the entire log root is missing.
+	     This parent is root-owned and is not writable by user accounts. -->
+	<key>StandardErrorPath</key><string>/Library/Application Support/SentryScreen/watchdog.err</string>
+</dict>
+</plist>

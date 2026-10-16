@@ -1,0 +1,8 @@
+#!/bin/bash
+# Installer.app entry point. Ignore test-only environment overrides even if a
+# caller has them set; a real package always configures the system root.
+set -euo pipefail
+unset SENTRY_INSTALL_ROOT SENTRY_SKIP_LAUNCHD SENTRY_SKIP_OWNERSHIP
+unset SENTRY_TEST_TRANSACTION_HOOK SENTRY_TEST_OWNER_SWAP_TRIPWIRE SENTRY_MODEL_FILE
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec /bin/bash "$SCRIPT_DIR/configure-install.sh"

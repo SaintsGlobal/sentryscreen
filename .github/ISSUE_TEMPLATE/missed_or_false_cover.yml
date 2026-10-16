@@ -1,0 +1,55 @@
+name: Missed or false cover
+description: SentryScreen missed something it should have covered, or covered something harmless.
+labels: [detection]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never attach explicit images or screen recordings of explicit content.** Describe what happened in words, or attach a diagnostic report instead (Settings › App › Review a diagnostic report…).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What went wrong
+      options:
+        - Missed content that should have been covered
+        - Covered something harmless (false cover)
+        - Cover came too late or lifted too early
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What was on screen
+      description: In words only. The app or website, and what kind of picture or video (for example "a beach photo in Photos", "a cartoon in a browser game").
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Cover mode
+      options:
+        - Curtain (default)
+        - Region
+        - Media
+        - Not sure
+  - type: dropdown
+    id: sensitivity
+    attributes:
+      label: Sensitivity
+      options:
+        - Standard
+        - Strict
+        - Not sure
+  - type: input
+    id: version
+    attributes:
+      label: SentryScreen version
+      description: Settings › App, for example 0.4.0 (27).
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and macOS version
+    validations:
+      required: true
