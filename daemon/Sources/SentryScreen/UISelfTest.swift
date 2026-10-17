@@ -4769,11 +4769,11 @@ enum UISelfTest {
             Uninstall.Choice() == del, "\(Uninstall.Choice())")
         check("uninstall: keep ⇒ SENTRY_KEEP_SETTINGS=yes and no flag",
             Uninstall.shellCommand(keep, scriptPath: "/x/uninstall.sh")
-                == "SENTRY_KEEP_SETTINGS='yes' '/x/uninstall.sh' 2>&1",
+                == "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin SENTRY_KEEP_SETTINGS='yes' /bin/bash -p '/x/uninstall.sh' 2>&1",
             Uninstall.shellCommand(keep, scriptPath: "/x/uninstall.sh"))
         check("uninstall: delete + reset ⇒ =no and --reset-permissions",
             Uninstall.shellCommand(del, scriptPath: "/x/uninstall.sh")
-                == "SENTRY_KEEP_SETTINGS='no' '/x/uninstall.sh' '--reset-permissions' 2>&1",
+                == "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin SENTRY_KEEP_SETTINGS='no' /bin/bash -p '/x/uninstall.sh' '--reset-permissions' 2>&1",
             Uninstall.shellCommand(del, scriptPath: "/x/uninstall.sh"))
         // The installed path has a space in it; a quote in a path would end
         // the AppleScript literal. Both must survive intact.

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Removing SentryScreen from the app now runs the root removal script with a
+  fixed, clean environment (`env -i` with a fixed PATH, and `bash -p`).
+  Before, settings a standard account had made for its own session could
+  reach that script once a parent entered the administrator password there.
+
 ## 0.4.1 (build 28)
 
 Security and privacy fixes.

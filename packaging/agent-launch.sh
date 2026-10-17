@@ -254,8 +254,8 @@ fi
 # and withhold protection — while the watchdog saw a running job writing logs.
 # `SENTRY_FAKE_NO_DISPLAY`, `SENTRY_IDLE_GATE=0`, `SENTRY_ALERTS_LOG`,
 # `SENTRY_LOG_DIR` and the rest of the knob list are the same class. The daemon
-# now refuses those variables by itself unless it was launched as a dev/test
-# run (daemon DevEnv.swift, layer 2); this is layer 1: the daemon is launched
+# itself always honours those variables (daemon DevEnv.swift), so this wrapper
+# is the one boundary: the daemon is launched
 # through `env -i`, so NOTHING ambient reaches it — not our knobs, not
 # DYLD_*/CF*/Malloc* debug variables, not a poisoned PATH.
 #
@@ -299,7 +299,8 @@ SCRUB_HOME="$(id -P "${SCRUB_USER:-}" 2>/dev/null | awk -F: 'NR==1{print $9}')"
 SCRUB_TMPDIR="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
 # Fail loudly, but never refuse to launch over a missing convenience variable:
 # an unprotected session is the worse failure (SPEC §8), and none of these is a
-# safety boundary any more — layer 2 ignores the knobs whatever HOME says.
+# safety boundary: each comes from the passwd database or getconf, never the
+# ambient environment.
 SCRUB_ENV=(PATH="$SCRUB_PATH")
 if [ -n "$SCRUB_HOME" ]; then
   SCRUB_ENV+=(HOME="$SCRUB_HOME")
@@ -320,8 +321,8 @@ else
        "temporary files land in /tmp (fix: agent-launch.sh SCRUB_TMPDIR)" | log_append "$d/agent.err"
 fi
 # --- ENV_SCRUB evidence: a refused attempt must be LOUD ---------------------
-# Review repair 2026-09-11 (critic blocker 2). Layer 1 deletes the evidence
-# before layer 2 can name it: under `env -i` the daemon's own
+# Review repair 2026-09-11 (critic blocker 2). `env -i` deletes the evidence
+# before the daemon can name it: under `env -i` the daemon's own
 # `DevEnv.ambientKnobs` is necessarily EMPTY on an installed machine, so its
 # launch `"event":"env"` record reads `devEnv=inert envKnobs=0` whether or not a
 # child ran `launchctl setenv SENTRY_STATE_DIR …; launchctl kickstart -k`. This
@@ -337,8 +338,8 @@ fi
 # Honest limit: some OTHER variable's value may contain a newline followed by a
 # plausible `SENTRY_X=` line, so a name in this list is this wrapper's reading
 # of its environment and not proof of which variable was set — the COUNT and
-# the fact of a drop are the signal, and layer 2 makes the answer moot either
-# way. DYLD_* is in the pattern because it is the other family that changes a
+# the fact of a drop are the signal, and the drop itself is what keeps the
+# variable out of the daemon. DYLD_* is in the pattern because it is the other family that changes a
 # process before main() (insert-libraries, library paths) — defence in depth
 # only: MEASURED 2026-09-11 on an M1 Mac (macOS 26), dyld strips every DYLD_*
 # across an exec of a SIP-protected platform binary, and the plist runs

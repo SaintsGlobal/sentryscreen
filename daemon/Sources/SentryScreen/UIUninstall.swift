@@ -92,14 +92,23 @@ enum Uninstall {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// The fixed environment the root script starts with. The Uninstaller
+    /// app inherits the session's `launchctl setenv` variables, which a
+    /// Standard account can set without admin, and the administrator prompt
+    /// hands the caller's environment to the root shell. So the command starts
+    /// from `env -i` with this PATH, and bash runs with `-p` so no BASH_ENV or
+    /// imported function is read before the script's first line.
+    static let rootPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+
     /// The command `do shell script` runs, as a shell string.
     ///
     /// `2>&1` on purpose: on a failure the parent is shown the script's OWN
     /// error text (it prints `ERROR: … remediation=…` lines by design), and
     /// on success the `bootout … gone after N s` lines land in the log.
     static func shellCommand(_ c: Choice, scriptPath: String = Uninstall.scriptPath) -> String {
-        var parts = c.env.sorted { $0.key < $1.key }.map { "\($0.key)=\(shellQuoted($0.value))" }
-        parts.append(shellQuoted(scriptPath))
+        var parts = ["/usr/bin/env", "-i", "PATH=\(rootPath)"]
+        parts += c.env.sorted { $0.key < $1.key }.map { "\($0.key)=\(shellQuoted($0.value))" }
+        parts += ["/bin/bash", "-p", shellQuoted(scriptPath)]
         parts.append(contentsOf: c.args.map(shellQuoted))
         return parts.joined(separator: " ") + " 2>&1"
     }
