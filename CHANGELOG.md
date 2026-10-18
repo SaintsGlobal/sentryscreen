@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 (build 29)
+
+Security follow-ups from the 0.4.1 review.
 
 - When the small per-image covers fill more than 90% of the screen for over a
   minute, SentryScreen now lifts only those covers, for 10 seconds. Window

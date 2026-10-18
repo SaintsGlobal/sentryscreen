@@ -22,10 +22,10 @@ import SwiftUI
 /// straight out of `daemon/.build`, which has no Info.plist at all — a dev
 /// build then says so rather than inventing a version.
 enum UIVersion {
-    static let fallbackShort = "0.4.1"
+    static let fallbackShort = "0.4.2"
     static let fallbackBuild = "1"
 
-    /// `0.4.1 (build 1)`, from the bundle when there is one.
+    /// `0.4.2 (build 1)`, from the bundle when there is one.
     static var display: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? fallbackShort
