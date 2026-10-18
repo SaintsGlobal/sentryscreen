@@ -19,8 +19,9 @@ import Foundation
 /// the curtain is the escalation.
 ///
 /// The full-coverage tripwire (SPEC §8.1(2)) intentionally does not count
-/// curtains: a curtain is bounded by one window's frame by construction
-/// (the transition shield is the bounded, logged exception).
+/// curtains, and its release leaves them up: a curtain is bounded by one
+/// window's frame by construction (the transition shield is the bounded,
+/// logged exception).
 final class Curtain {
     /// Hits inside `windowSecs` needed to drop the curtain. Basis: the live
     /// strict run (daemon/testdata/livestrict-bing-2026-08-19.jsonl) shows on-screen

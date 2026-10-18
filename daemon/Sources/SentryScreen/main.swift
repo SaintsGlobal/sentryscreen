@@ -212,7 +212,7 @@ struct Options {
     var mediaHoldSecs = 5.0
     var mediaHoldFrames: Int { Int(mediaHoldSecs * Double(fps)) }
     // Debug injection shape/duration (SPEC §8.2); full-screen rect + long
-    // duration lets automated tests exercise the coverage tripwire.
+    // duration lets automated tests exercise the coverage tripwire's release.
     var injectRect = CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.2)
     var injectSecs = 3.0
     /// `--dev-inject`: register the test-only inject hotkey
@@ -1331,7 +1331,7 @@ final class Pipeline {
     private let pauseSeconds = 300.0  // panic pause, SPEC §8.1(1)
     // Pause ownership: two deadlines, one state.
     // Main-thread only.
-    /// Panic hotkey, coverage tripwire, dev SIGUSR2. Every change goes through
+    /// Panic hotkey, dev SIGUSR2. Every change goes through
     /// `setPanic` so the UI sees the same deadline the pipeline obeys.
     private var panic: PanicPause?
     private var panicUntil: Date? { panic?.until }
@@ -1372,12 +1372,16 @@ final class Pipeline {
     // Main-thread flag. Panic sets it BEFORE clearAll so an overlay sync from
     // an in-flight frame (queued behind the clear) cannot resurrect windows.
     private var suppressed = false
-    // Full-coverage tripwire (SPEC §8.1(2)): >90% of screen covered for >60 s
-    // logs loudly and auto-clears via the panic path in EVERY build, installed
-    // included (owner 2026-09-02: safety wins over the "a full-screen video can
-    // be a correct full block" case — with the hotkey admin-gated, this
-    // no-prompt clear is what guarantees nobody is trapped behind a REGION
-    // cover — see the scope note below for what it does not watch).
+    // Full-coverage tripwire (SPEC §8.1(2)): >90% of screen covered by REGION
+    // covers for >60 s logs loudly and lifts the REGION covers alone for
+    // `regionReleaseSecs`, in every build, installed included. Curtains and
+    // detection stay on (owner 2026-10-18, security review): until then the
+    // trip went through the panic path — every cover off, detection paused
+    // 5 min — so a screen deliberately tiled with flagged close-ups bought a
+    // repeatable five unprotected minutes with no prompt. What the release
+    // still guarantees is the 2026-09-02 intent: nobody stays behind a screen
+    // of runaway REGION covers (see the scope note below for what it does
+    // not watch).
     //
     // SCOPE, stated exactly (review 2026-09-09): this tripwire measures REGION
     // COVERS ONLY. `painted` is `PaintSmoother.rects(for: regions …)`; curtains
@@ -1405,6 +1409,25 @@ final class Pipeline {
     private let coverageLimit: CGFloat = 0.9
     private let coverageSeconds = 60.0
     private var coverageSince: CFAbsoluteTime?
+    /// How long a full-coverage trip lifts the region covers. ASSUMED
+    /// (owner 2026-10-18): long enough to see the screen and close or move
+    /// what is under the covers, short enough that a deliberate trip buys
+    /// little — the covers are click-through throughout, so the release is
+    /// for seeing, not for regaining input. The tracker keeps tracking, so
+    /// covers still owed come straight back when it ends.
+    static let regionReleaseSecs: CFTimeInterval = 10
+    /// Main thread. Region covers are not painted before this time.
+    private var regionReleaseUntil: CFAbsoluteTime = 0
+    /// At most one alerts.log line per this interval for releases; the ones
+    /// in between are counted into the next line. DERIVED: a screen that
+    /// stays fully covered trips once per `coverageSeconds`, which would
+    /// otherwise write ~1,400 lines a day into the 5 MiB alerts budget a
+    /// parent reads; one line per 10 min still dates every episode.
+    static let releaseAlertGapSecs: CFTimeInterval = 600
+    /// Main thread: the last release line written, and releases since.
+    private var lastReleaseAlertAt: CFAbsoluteTime?
+    private var releasesSinceAlert = 0
+    private var regionsReleased: Bool { CFAbsoluteTimeGetCurrent() < regionReleaseUntil }
     // Media-path pixel-work accounting. Written on
     // detectQueue, read once at the end of a --process run.
     private var mediaMsTotal = 0.0
@@ -1661,7 +1684,7 @@ final class Pipeline {
     static func exclusionWindowNumbers(covers: [Int], detectionView: Int?) -> [Int] {
         covers + (detectionView.map { [$0] } ?? [])
     }
-    /// Main thread. A pause (panic, parent, tripwire, SIGUSR2) turns the
+    /// Main thread. A pause (panic, parent, SIGUSR2) turns the
     /// Detection view off and refuses turning it on.
     var isPausedForDetectionView: Bool { suppressed }
     /// Main thread, synchronous: repaint the newest held covers now that
@@ -1672,10 +1695,11 @@ final class Pipeline {
         guard opts.overlays, !suppressed, !detectionViewSuppressesCovers else { return }
         let created = detectionViewHeldPaint.replay(
             isCurrent: { capture?.isCurrentGeneration($0) ?? false },
-            sync: { f in
+            sync: { [regionsReleased] f in
                 overlays.sync(
-                    f.regions, painted: f.painted, anchors: f.anchors, capturedAt: f.capturedAt,
-                    curtains: f.curtains, curtainOwners: f.owners)
+                    regionsReleased ? [] : f.regions, painted: regionsReleased ? [] : f.painted,
+                    anchors: regionsReleased ? [] : f.anchors, capturedAt: f.capturedAt,
+                    curtains: f.curtains, curtainOwners: regionsReleased ? [:] : f.owners)
             },
             syncCurtains: { overlays.syncCurtainState($0.curtains, at: $0.at) })
         if created {
@@ -3183,10 +3207,13 @@ final class Pipeline {
                         capturedAt: frame.capturedAt, curtains: curtains, owners: owners)
                     guard !suppressed else { return }
                     guard !detectionViewSuppressesCovers else { return }
+                    // A full-coverage release paints curtains only.
+                    let released = regionsReleased
                     if overlays.sync(
-                        regions, painted: painted, anchors: anchors,
+                        released ? [] : regions, painted: released ? [] : painted,
+                        anchors: released ? [] : anchors,
                         capturedAt: frame.capturedAt, curtains: curtains,
-                        curtainOwners: owners) {
+                        curtainOwners: released ? [:] : owners) {
                         capture.refreshExclusion(windowNumbers: exclusionWindowNumbers)
                         detectionView?.coverWindowCreated(overlays.windowNumbers.first)
                     }
@@ -3293,8 +3320,40 @@ final class Pipeline {
                 "tripwire",
                 "full-coverage: limit \(coverageLimit) painted for \(Int(coverageSeconds))s, "
                 + "observed \(String(format: "%.2f", coverage)) (fix: Pipeline.coverageLimit); "
-                + "auto-panic, every build")
-            DispatchQueue.main.async { self.panic(source: "coverage-tripwire") }
+                + "region covers lifted \(Int(Self.regionReleaseSecs))s, curtains and detection on")
+            DispatchQueue.main.async { self.releaseRegionCovers(observed: coverage) }
+        }
+    }
+
+    /// Pure; `--ui-selftest` checks both.
+    static func releaseAlertDue(now: CFAbsoluteTime, last: CFAbsoluteTime?) -> Bool {
+        last.map { now - $0 >= releaseAlertGapSecs } ?? true
+    }
+
+    static func releaseAlertMessage(observed: CGFloat, count: Int) -> String {
+        "covers lifted for safety — small covers filled "
+            + "\(Int((observed * 100).rounded()))% of the screen for over a minute, so they were "
+            + "lifted for \(Int(regionReleaseSecs)) s; window covers and detection stayed on"
+            + (count > 1 ? " (\(count) times since the last line)" : "")
+            + ". Repeats can mean someone is trying to get around SentryScreen "
+            + "(budget Pipeline.releaseAlertGapSecs)"
+    }
+
+    /// Main thread. Lifts the region covers for `regionReleaseSecs` and
+    /// records it where a parent reads (alerts.log), coalesced by
+    /// `releaseAlertGapSecs`.
+    private func releaseRegionCovers(observed: CGFloat) {
+        let now = CFAbsoluteTimeGetCurrent()
+        regionReleaseUntil = now + Self.regionReleaseSecs
+        releasesSinceAlert += 1
+        guard Self.releaseAlertDue(now: now, last: lastReleaseAlertAt) else { return }
+        let message = Self.releaseAlertMessage(observed: observed, count: releasesSinceAlert)
+        lastReleaseAlertAt = now
+        releasesSinceAlert = 0
+        let path = AlertsLog.resolvePath(logPath: opts.logPath)
+        if let failure = AlertsLog.append(level: "ALERT", message: message, path: path) {
+            logger.event("tripwire", "alerts.log append FAILED: \(failure) — the full-coverage "
+                + "record above (run.jsonl) is the only copy; fix: make the file appendable by this uid")
         }
     }
 
@@ -3492,9 +3551,9 @@ final class Pipeline {
     /// an in-flight overlay sync cannot resurrect windows, clear, then reset
     /// every detect-side state on detectQueue.
     private func enterPause() {
-        // Every pause (granted panic, parent pause, coverage tripwire,
-        // SIGUSR2) turns the Detection view off first. `panicUntil` is set
-        // before a panic-class pause reaches here, so it names which.
+        // Every pause (granted panic, parent pause, SIGUSR2) turns the
+        // Detection view off first. `panicUntil` is set before a panic-class
+        // pause reaches here, so it names which.
         detectionView?.turnOff(
             reason: (panicUntil ?? .distantPast) > Date() ? .panicPause : .parentPause)
         pauseResumeAcknowledger.cancelPendingResume()

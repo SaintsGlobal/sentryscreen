@@ -4197,6 +4197,28 @@ enum UISelfTest {
             }
         }
         check("cover label: invariant — the chosen label always fits inside the cover", inside)
+        // CURTAIN HINT (owner 2026-10-18): whole-window covers lead with the
+        // way out; region covers never show it; narrow curtains fall back.
+        let hint = RegionLayer.curtainLabelSizes.first!.size
+        check("cover label: a 1172 pt curtain reads the ⌘W hint",
+            RegionLayer.labelText(forWidth: 1172, height: 626, curtain: true) == RegionLayer.curtainHint,
+            "hint=\(hint)")
+        check("cover label: a 1172 pt region cover never reads the hint",
+            RegionLayer.labelText(forWidth: 1172, height: 626) == "Content blocked")
+        check("cover label: a curtain too narrow for the hint falls back to \"Content blocked\"",
+            RegionLayer.labelText(forWidth: hint.width + pad - 1, height: 626, curtain: true) == "Content blocked")
+        check("cover label: the hint says ⌘W, never ⌘Q",
+            RegionLayer.curtainHint.contains("⌘W") && !RegionLayer.curtainHint.contains("⌘Q"))
+        var curtainInside = true
+        for w in stride(from: 20, through: 800, by: 1) {
+            if let text = RegionLayer.labelText(forWidth: CGFloat(w), height: 129, curtain: true),
+                let s = RegionLayer.curtainLabelSizes.first(where: { $0.text == text })?.size,
+                s.width + pad > CGFloat(w) {
+                curtainInside = false
+                break
+            }
+        }
+        check("cover label: invariant — a curtain's chosen label always fits inside it", curtainInside)
         // The SOURCE DEFAULT, not the live `chromeStripPt`: main.swift applies
         // `--config` (~263) and `--curtain-strip` (~344) before it dispatches
         // `--ui-selftest` (~2016), so the mutable var here is whatever the
@@ -4739,6 +4761,23 @@ enum UISelfTest {
             "coverage: the uncapped union of those stripes would have been larger",
             Pipeline.paintedArea(stripes) > Pipeline.paintedCoverage(stripes),
             "all=\(Pipeline.paintedArea(stripes)) capped=\(Pipeline.paintedCoverage(stripes))")
+        // RELEASE (owner 2026-10-18): a trip lifts region covers only, briefly,
+        // and its parent-visible line is coalesced.
+        check("coverage release: brief (≤ 30 s) and not the 300 s panic",
+            Pipeline.regionReleaseSecs > 0 && Pipeline.regionReleaseSecs <= 30)
+        check("coverage release: the first release writes an alert line",
+            Pipeline.releaseAlertDue(now: 1000, last: nil))
+        check("coverage release: a second release inside the gap is coalesced",
+            !Pipeline.releaseAlertDue(now: 1000 + Pipeline.releaseAlertGapSecs - 1, last: 1000))
+        check("coverage release: a release after the gap writes again",
+            Pipeline.releaseAlertDue(now: 1000 + Pipeline.releaseAlertGapSecs, last: 1000))
+        let one = Pipeline.releaseAlertMessage(observed: 0.934, count: 1)
+        let many = Pipeline.releaseAlertMessage(observed: 0.95, count: 7)
+        check("coverage release: the line names the share, the length and what stayed on",
+            one.contains("93%") && one.contains("10 s") && one.contains("window covers and detection stayed on")
+                && !one.contains("times since"), one)
+        check("coverage release: a coalesced line counts the releases it stands for",
+            many.contains("(7 times since the last line)"), many)
     }
 
     // MARK: 8 — AdminCheck

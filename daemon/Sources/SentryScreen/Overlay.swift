@@ -479,7 +479,7 @@ final class OverlayManager {
             if let layer = curtainLayers[entry.id] {
                 layer.update(frame: frame)
             } else {
-                let layer = RegionLayer(scale: scale)
+                let layer = RegionLayer(scale: scale, curtain: true)
                 hostLayer.addSublayer(layer.shape)
                 layer.update(frame: frame)
                 curtainLayers[entry.id] = layer
@@ -1276,6 +1276,14 @@ final class RegionLayer {
     /// form never fit there and the old single-string rule hid the label.
     /// "Blocked" (~50 pt) fits every thumbnail either receipt measured.
     static let labelLadder = ["Content blocked", "Blocked"]
+    /// Curtains (whole-window covers) lead with the way out. Owner-approved
+    /// copy 2026-10-18. ⌘W, not ⌘Q: it closes the covered tab or window, not
+    /// the whole app and every other tab in it. "Click here" first because
+    /// the keys go to the frontmost window, which may not be the covered one;
+    /// covers are click-through, so the click focuses the window underneath.
+    /// Region covers keep the short ladder: they sit on images, not windows.
+    static let curtainHint = "Content blocked — click here, then press ⌘W to close"
+    static let curtainLadder = [curtainHint] + labelLadder
     static let labelFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     /// Margin the text keeps from the cover's edge, per side, both axes.
     /// DERIVED: 4 pt per side is the old `width < text + 8` rule (unchanged in
@@ -1284,20 +1292,26 @@ final class RegionLayer {
     /// INVARIANT: the label never draws outside the black rect — a string is
     /// picked only if it fits inside the frame minus this margin, else hidden.
     static let labelPadPt: CGFloat = 4
-    static let labelSizes: [(text: String, size: CGSize)] = labelLadder.map {
-        ($0, ($0 as NSString).size(withAttributes: [.font: labelFont]))
+    static let labelSizes: [(text: String, size: CGSize)] = measured(labelLadder)
+    static let curtainLabelSizes: [(text: String, size: CGSize)] = measured(curtainLadder)
+    static func measured(_ ladder: [String]) -> [(text: String, size: CGSize)] {
+        ladder.map { ($0, ($0 as NSString).size(withAttributes: [.font: labelFont])) }
     }
 
     /// The longest ladder entry that fits a cover of this size, nil when even
     /// the shortest does not (or the cover is shorter than one line).
-    static func labelText(forWidth width: CGFloat, height: CGFloat) -> String? {
+    static func labelText(forWidth width: CGFloat, height: CGFloat, curtain: Bool = false) -> String? {
         let pad = 2 * labelPadPt
-        return labelSizes.first {
+        return (curtain ? curtainLabelSizes : labelSizes).first {
             $0.size.width + pad <= width && $0.size.height + pad <= height
         }?.text
     }
 
-    init(scale: CGFloat) {
+    /// A curtain's ladder starts with `curtainHint`.
+    let curtain: Bool
+
+    init(scale: CGFloat, curtain: Bool = false) {
+        self.curtain = curtain
         shape.backgroundColor = NSColor.black.cgColor
         label.font = Self.labelFont
         label.fontSize = Self.labelFont.pointSize
@@ -1309,8 +1323,8 @@ final class RegionLayer {
 
     func update(frame: CGRect) {
         shape.frame = frame
-        guard let text = Self.labelText(forWidth: frame.width, height: frame.height),
-            let s = Self.labelSizes.first(where: { $0.text == text })?.size
+        guard let text = Self.labelText(forWidth: frame.width, height: frame.height, curtain: curtain),
+            let s = Self.curtainLabelSizes.first(where: { $0.text == text })?.size
         else {
             label.isHidden = true
             return

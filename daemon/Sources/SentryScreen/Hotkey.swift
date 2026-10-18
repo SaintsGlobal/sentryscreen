@@ -22,7 +22,7 @@ final class HotkeyCenter {
     /// kickstarting a doomed daemon every ~60 s. The only failure MEASURED on
     /// this macOS is the same-process duplicate (`HotkeyRegistration`), which
     /// the in-process Pipeline restart used to trigger. SPEC §8.1(1)–(2) still
-    /// have the coverage tripwire as the escape path when the key is gone —
+    /// have the coverage tripwire's region release when the key is gone —
     /// SIGUSR2 stopped being one on an installed build 2026-09-07 (SPEC
     /// §8.1(8), DevSignals.swift): it is a dev trigger, not a safety layer.
     static let panicKey = (code: UInt32(kVK_ANSI_X), label: "Cmd+Opt+Ctrl+X")
@@ -188,7 +188,7 @@ enum HotkeyStartup {
         case .failed(let status):
             let msg = "panic hotkey \(panicLabel) REGISTRATION FAILED "
                 + "(RegisterEventHotKey status \(HotkeyRegistration.describe(status))) — protection keeps "
-                + "running; the coverage tripwire still clears covers; the key stays "
+                + "running; the coverage tripwire still lifts stuck covers; the key stays "
                 + "unavailable until the agent restarts (log out and back in); if it recurs, report the status"
             records.append(("hotkey", msg))
             alert = msg

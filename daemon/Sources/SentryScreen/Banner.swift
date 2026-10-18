@@ -619,8 +619,8 @@ enum PanicToast {
 
     /// The toast for a panic-pause change, or nil. Shown once per panic
     /// the keys started: not for an expiry or an early resume (next nil),
-    /// not for the coverage tripwire (no one pressed anything), and not
-    /// again for a republish of the same deadline.
+    /// not for a source no one pressed a chord for, and not again for a
+    /// republish of the same deadline.
     static func spec(previous: PanicPause?, next: PanicPause?) -> ToastSpec? {
         guard let next, next.fromEmergencyKeys, next.until != previous?.until else { return nil }
         return ToastSpec(id: toastID, kind: .notice, icon: .symbol(UISymbol.pause, .quiet),

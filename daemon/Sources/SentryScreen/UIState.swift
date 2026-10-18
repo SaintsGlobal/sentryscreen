@@ -36,7 +36,7 @@ enum BootSession {
 /// Unlike `PauseState` it is not machine-wide and never written to disk.
 struct PanicPause: Equatable {
     let until: Date
-    /// `Pipeline.panic` source: "hotkey", "coverage-tripwire", "SIGUSR2".
+    /// `Pipeline.panic` source: "hotkey" or "SIGUSR2".
     let source: String
 
     /// The emergency keys, or their dev stand-in on a dev run (SPEC

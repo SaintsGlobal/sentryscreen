@@ -483,12 +483,11 @@ enum UIPopoverCopy {
     static let pausedTitle = "Off for everyone on this Mac"
     static let resumeLabel = "Resume now"
     /// Owner 2026-09-29 (plan §6 item 3, option B): the paused card after the
-    /// emergency keys. The tripwire line is not owner-approved copy yet.
+    /// emergency keys, the only panic source left on an installed build (the
+    /// full-coverage tripwire lifts region covers without pausing since
+    /// 2026-10-18).
     static let panicKeysChip = "Emergency keys used. Every cover was cleared."
-    static let panicTripwireChip = "The screen was fully covered for a minute. Every cover was cleared."
-    static func panicChip(_ panic: PanicPause) -> String {
-        panic.fromEmergencyKeys ? panicKeysChip : panicTripwireChip
-    }
+    static func panicChip(_ panic: PanicPause) -> String { panicKeysChip }
     static let back = "Back"
     static let cancel = "Cancel"
     static let screenRecordingOffLine = "Screen Recording is off."

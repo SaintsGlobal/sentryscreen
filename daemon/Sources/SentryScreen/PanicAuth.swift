@@ -10,10 +10,11 @@ import Security
 /// up while the prompt is open: they are click-through
 /// by construction (SPEC §8), so the prompt is usable underneath or beside
 /// them, and the coverage tripwire (SPEC §8.1(2), >90 % covered for 60 s)
-/// still auto-panics without any prompt — so a child cannot hold the key to
-/// buy a five-minute window, and a parent can never be trapped behind a cover.
-/// The coverage tripwire calls `panic()` directly and is deliberately
-/// unchanged: it is not reachable from the keyboard at all. SIGUSR2 also
+/// still lifts runaway region covers without any prompt — so a child cannot
+/// hold the key to buy a five-minute window, and nobody stays behind a screen
+/// of region covers. Since 2026-10-18 the tripwire no longer goes through
+/// `panic()`: it lifts region covers for `Pipeline.regionReleaseSecs` with
+/// curtains and detection still on. SIGUSR2 also
 /// bypassed this gate and WAS reachable — by any process in the session,
 /// `kill -USR2 <pid>` — so since 2026-09-07 it is armed only on a dev run
 /// (`DevSignals.swift`, SPEC §8.1(8)) and refused, by name, everywhere else.

@@ -995,6 +995,56 @@ report_wrapper_marker() {  # uid file tripped|expired|env-scrub
     alert ALERT "wrapper marker report stamp $stamp could not be written (symlink or unwritable) — this line will repeat every pass until it can be"
   fi
 }
+# --- Trusted compiled model (security review 2026-10-18) ---------------------
+# The agent loads only the root-compiled model entry beside the installed
+# package (Detector.compiledURL). It used to compile a private copy in the
+# account's own temp folder when that entry was missing, and a Standard account
+# owns that folder, so it could swap the compiled model between compile and
+# load for one that never fires. Now the agent refuses and shows the failure,
+# and the repair is here, as root: when the expected entry is missing or not
+# wholly root-owned and unwritable by others, rebuild it with the command
+# configure-install.sh runs, then restart the agents so they load it.
+# MEASURED 2026-10-16 (Mac Studio, four installs): the compile took 54–73 ms.
+# The expected name comes from model-identity.tsv, the same digest the agent
+# keys on (Detector.manifestDigest); without a matching manifest any
+# <stem>.*.mlmodelc counts, and the agent's own check stays the judge.
+check_model_cache() {
+  local support="/Library/Application Support/SentryScreen" model stem sha entry bad out
+  model="$(/usr/bin/plutil -extract model raw -o - "$support/config.json" 2>/dev/null)" || return 0
+  case "$model" in "$support"/*.mlpackage) ;; *) return 0 ;; esac
+  [ -d "$model" ] || return 0
+  stem="${model##*/}"; stem="${stem%.mlpackage}"
+  sha="$(/usr/bin/awk -F'\t' -v p="${model##*/}" '$1=="payload_path"{ok=($2==p)} $1=="sha256"{s=$2} END{if(ok)print s}' \
+    "$support/model-identity.tsv" 2>/dev/null)"
+  bad="missing"
+  for entry in "$support/$stem".${sha:+manifest-$sha.}*mlmodelc; do
+    [ -d "$entry" ] && [ ! -L "$entry" ] || continue
+    if [ -z "$(/usr/bin/find "$entry" \( ! -user 0 -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit 2>/dev/null)" ]; then
+      bad=""
+      break
+    fi
+    bad="untrusted $entry"
+  done
+  [ -n "$bad" ] || { stamp_changed model-cache ok >/dev/null || true; return 0; }
+  if out="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root \
+      "$support/SentryScreen.app/Contents/MacOS/sentry-screen" --compile-model-cache "$model" 2>&1)"; then
+    alert ALERT "trusted compiled model was $bad beside $model — rebuilt as root ($(printf '%s' "$out" | tr '\n' ' ')); restarting the agents so they load it (tamper or failed install: model-cache-repaired)"
+    stamp_changed model-cache ok >/dev/null || true
+    for uid in $UIDS; do
+      launchctl kickstart -k "gui/$uid/$LABEL" 2>>"$ALERTS" \
+        || { alert ALERT "kickstart -k FAILED for gui/$uid after the model cache repair"; failed=1; }
+    done
+  else
+    # Once per failure episode: a compile that keeps failing must not write
+    # a line every pass.
+    if stamp_changed model-cache failed; then
+      alert ALERT "trusted compiled model $bad beside $model and the rebuild FAILED ($(printf '%s' "$out" | tr '\n' ' ')) — protection stays off until it exists (fix: reinstall the package)"
+    fi
+    failed=1
+  fi
+}
+[ "$REQUIRE_ROOT_OWNER" != "1" ] || check_model_cache
+
 for uid in $UIDS; do
   report_wrapper_marker "$uid" "$LOG_ROOT/$uid/RELAUNCH_BURST.tripped" tripped
   report_wrapper_marker "$uid" "$LOG_ROOT/$uid/RELAUNCH_BURST.tripped.last" expired

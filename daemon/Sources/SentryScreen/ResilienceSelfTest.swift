@@ -323,14 +323,21 @@ enum ResilienceSelfTest {
 
         plantEntry()
         warnings = ""
+        // Since 2026-10-18 a protected source never compiles a copy of its
+        // own (the account controls every folder it could write one to):
+        // refusal is `Detector.UntrustedOnly`, with no compile.
+        func refusedOnly(_ r: Result<(model: String, compile: String, pruned: Int), Error>) -> Bool {
+            if case .failure(let e) = r { return e is Detector.UntrustedOnly }
+            return false
+        }
         var trustBefore = compiles
-        let refused = try? Detector.resolveModel(
+        let refused = Result { try Detector.resolveModel(
             source: guardedPkg, identity: guardedIdentity,
             trust: Detector.CacheTrust(owner: stranger, protected: true),
-            compile: compile, load: load, warn: warn)
-        check("a protected source refuses an entry owned by another uid",
-              refused?.compile == "temp" && refused?.model != "planted" && compiles == trustBefore + 1,
-              "compile=\(refused?.compile ?? "nil") model=\(refused?.model ?? "nil")")
+            compile: compile, load: load, warn: warn) }
+        check("a protected source refuses an entry owned by another uid, and compiles nothing",
+              refusedOnly(refused) && compiles == trustBefore,
+              "result=\(refused) compiles=\(compiles - trustBefore)")
         check("the refusal is a named warning",
               warnings.contains("tamper MODEL_CACHE_TRUST"), warnings)
         check("a refused entry is never written over or deleted by the agent",
@@ -352,38 +359,40 @@ enum ResilienceSelfTest {
             ofItemAtPath: guardedEntry.appendingPathComponent("model.mil").path)
         warnings = ""
         trustBefore = compiles
-        let writable = try? Detector.resolveModel(
+        let writable = Result { try Detector.resolveModel(
             source: guardedPkg, identity: guardedIdentity,
             trust: Detector.CacheTrust(owner: me, protected: true),
-            compile: compile, load: load, warn: warn)
+            compile: compile, load: load, warn: warn) }
         check("a group/other-writable file anywhere in the entry is refused",
-              writable?.compile == "temp" && compiles == trustBefore + 1 && warnings.contains("group/other-writable"),
-              "compile=\(writable?.compile ?? "nil") warnings=\(warnings)")
+              refusedOnly(writable) && compiles == trustBefore && warnings.contains("group/other-writable"),
+              "result=\(writable) warnings=\(warnings)")
 
         plantEntry()
         try? fm.removeItem(at: guardedEntry.appendingPathComponent("model.mil"))
         _ = symlink(root.appendingPathComponent("elsewhere").path,
             guardedEntry.appendingPathComponent("model.mil").path)
         warnings = ""
-        let linked = try? Detector.resolveModel(
+        let linked = Result { try Detector.resolveModel(
             source: guardedPkg, identity: guardedIdentity,
             trust: Detector.CacheTrust(owner: me, protected: true),
-            compile: compile, load: load, warn: warn)
+            compile: compile, load: load, warn: warn) }
         check("a symlink inside the entry is refused, never followed",
-              linked?.compile == "temp" && warnings.contains("not a file or directory"),
-              "compile=\(linked?.compile ?? "nil") warnings=\(warnings)")
+              refusedOnly(linked) && warnings.contains("not a file or directory"),
+              "result=\(linked) warnings=\(warnings)")
 
         try? fm.removeItem(at: guardedEntry)
         warnings = ""
-        let missingEntry = try? Detector.resolveModel(
+        trustBefore = compiles
+        let missingEntry = Result { try Detector.resolveModel(
             source: guardedPkg, identity: guardedIdentity,
             trust: Detector.CacheTrust(owner: stranger, protected: true),
-            compile: compile, load: load, warn: warn)
-        check("a missing trusted entry is a loud temp compile, not a tamper report",
-              missingEntry?.compile == "temp"
-                  && warnings.contains("no trusted compiled model")
+            compile: compile, load: load, warn: warn) }
+        check("a missing trusted entry refuses by name, compiles nothing, writes nothing",
+              refusedOnly(missingEntry) && compiles == trustBefore
+                  && "\(missingEntry)".contains("no trusted compiled model")
+                  && !warnings.contains("MODEL_CACHE_TRUST")
                   && !fm.fileExists(atPath: guardedEntry.path),
-              "compile=\(missingEntry?.compile ?? "nil")")
+              "result=\(missingEntry)")
 
         // Install-time compile (`--compile-model-cache`, run as root by
         // configure-install.sh): lands exactly where the agent looks, with

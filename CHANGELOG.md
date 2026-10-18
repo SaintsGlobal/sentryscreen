@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- When the small per-image covers fill more than 90% of the screen for over a
+  minute, SentryScreen now lifts only those covers, for 10 seconds. Window
+  covers and detection stay on. Before, it cleared every cover and paused
+  protection for 5 minutes, which a child could trigger on purpose by filling
+  the screen with flagged images. Each lift is written to the parent alert log
+  (at most one line per 10 minutes, with a count).
+- Window covers now say "Content blocked — click here, then press ⌘W to close"
+  when they are wide enough, so whoever is at the Mac knows how to close the
+  covered tab or window.
+- The app no longer prepares its detection model in the account's own folders.
+  If the model copy that the installer prepares is missing, protection shows
+  that it has stopped, and the background watchdog rebuilds the copy and restarts
+  protection within about a minute. Before, the app prepared a copy in a folder
+  the account controls, where a child could swap it for one that never detects
+  anything.
 - Removing SentryScreen from the app now runs the root removal script with a
   fixed, clean environment (`env -i` with a fixed PATH, and `bash -p`).
   Before, settings a standard account had made for its own session could

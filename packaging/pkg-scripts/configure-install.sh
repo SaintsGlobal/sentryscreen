@@ -800,7 +800,7 @@ if [ -z "$ROOT_PREFIX" ]; then
       "$SUPPORT/SentryScreen.app/Contents/MacOS/sentry-screen" --compile-model-cache "$SUPPORT/$MODEL_FILE" 2>&1)"; then
     printf 'configure-install: %s\n' "$compile_result"
   else
-    printf 'configure-install: trusted compiled model configured=root-owned-entry-beside-%s observed=compile-failed detail=%s remediation=agent-compiles-a-temporary-copy-each-launch;rerun-installer\n' \
+    printf 'configure-install: trusted compiled model configured=root-owned-entry-beside-%s observed=compile-failed detail=%s remediation=watchdog-retries-each-pass;rerun-installer\n' \
       "$MODEL_FILE" "$(printf '%s' "$compile_result" | tr '\n' ' ')" >&2
   fi
 fi

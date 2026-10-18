@@ -208,8 +208,9 @@ A forgotten parent PIN is reset with
 Hold **Control + Option + Command + X** for one second and authenticate as an
 administrator. All covers are removed and detection pauses for five minutes.
 Covers are click-through by construction, so the worst failure is "cannot see",
-never "cannot click". If covers fill more than 90% of the screen for over a
-minute, SentryScreen clears them on its own the same way.
+never "cannot click". If the small covers fill more than 90% of the screen for
+over a minute, SentryScreen lifts them for 10 seconds on its own. Window covers
+and detection stay on, and each lift is written to the parent alert log.
 
 ## Tuning tools
 

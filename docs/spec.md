@@ -110,8 +110,9 @@ account and cannot unload them.
 ### 8.1 Safety layers
 1. **Panic hotkey:** hold Control + Option + Command + X for 1 s, authenticate as an
    administrator; covers clear and detection pauses 5 minutes.
-2. **Tripwires:** at most 30 region layers; covers over 90% of the screen for over
-   60 s clear through the panic path, without a prompt, in every build.
+2. **Tripwires:** at most 30 region layers; region covers over 90% of the screen for
+   over 60 s are lifted for 10 s, without a prompt, in every build. Window covers
+   (curtains) and detection stay on, and the release is written to `alerts.log`.
 3. **Dead-man switch:** every development run uses `--ttl`.
 4. **Remote escape:** keep SSH available when testing the installed agent.
 5. **Second account:** covers belong to one session; another admin account is clean.

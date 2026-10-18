@@ -298,7 +298,7 @@ final class Detector {
 
     /// The `--compile-model-cache` entry point: one line on stdout, exit 0,
     /// or one named failure on stderr, exit 1 (configure-install.sh reports
-    /// it and the agent falls back to a private temp compile per launch).
+    /// it, the agent refuses to start, and the root watchdog retries the build).
     static func installCompiledCacheCommand(packagePath: String) -> Int32 {
         let t0 = CFAbsoluteTimeGetCurrent()
         do {
@@ -438,6 +438,9 @@ final class Detector {
         }
     }
 
+    /// A protected source with no trusted compiled entry.
+    struct UntrustedOnly: Error, CustomStringConvertible { let description: String }
+
     private static func compiledURL(
         source: URL,
         identity: ModelIdentity?,
@@ -474,12 +477,25 @@ final class Detector {
                     // only root or an administrator can have placed it).
                     warn("WARNING: tamper MODEL_CACHE_TRUST, configured=every node owned by uid "
                         + "\(trust.owner) with no group/other write, observed \(problem) — "
-                        + "NOT loading \(cache.path); compiling a private copy for this launch "
-                        + "(fix: reinstall the package; configure-install.sh recompiles it)\n")
+                        + "NOT loading \(cache.path); the root watchdog rebuilds it "
+                        + "(fix: reinstall the package if this repeats; configure-install.sh recompiles it)\n")
                     continue
                 }
                 return (cache, "cache", pruned)
             }
+        }
+        // A protected source (the installed, root-owned payload) never compiles
+        // a copy of its own (security review 2026-10-18): the only place this
+        // process could write one is the account's own temp or cache folder,
+        // which a Standard account controls, so it could swap the compiled
+        // model between compile and load for one that never fires. The agent
+        // shows the failure and the root watchdog rebuilds the trusted entry
+        // (watchdog.sh check_model_cache), then restarts this agent.
+        if trust.protected {
+            throw UntrustedOnly(description: "no trusted compiled model at "
+                + "\(candidates.map(\.path).joined(separator: ", ")) — refusing to compile a copy "
+                + "this account could change; the watchdog rebuilds it as root within a minute "
+                + "(fix: reinstall the package if this persists; configure-install.sh compiles it)")
         }
         let fresh = try compile(source)
         // A protected source's only candidate is the root-owned entry, which
@@ -499,12 +515,7 @@ final class Detector {
         // No candidate writable — per-launch temp compile keeps the launch
         // alive (vs the old die-here path that leaked a temp per restart).
         // Loud: per-launch recompile is a real cost someone must fix.
-        if trust.protected {
-            warn("WARNING: no trusted compiled model at "
-                + "\(candidates.map(\.path).joined(separator: ", ")) — using a private temp "
-                + "compile for this launch; every launch recompiles (~20 s) until it exists "
-                + "(fix: reinstall the package; configure-install.sh compiles it as root)\n")
-        } else if !candidates.isEmpty {
+        if !candidates.isEmpty {
             warn("WARNING: compiled-model cache unwritable at all of "
                 + "\(candidates.map(\.path).joined(separator: ", ")) — using temp compile "
                 + "for this launch; every launch recompiles (~20 s) until a cache dir is "
