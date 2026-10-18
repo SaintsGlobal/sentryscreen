@@ -157,6 +157,10 @@ struct Options {
     /// an installed model, as root, at install time (configure-install.sh;
     /// security review 2026-09-28 T3). Headless; exits.
     var compileModelCache: String?
+    /// `--check-model-cache <package>`: print whether the trusted entry the
+    /// agent would load is present and passes its trust rule (watchdog.sh,
+    /// as root). Headless; exits 0.
+    var checkModelCache: String?
     /// `--print-tuning`: dump the effective `TuningPolicy` (defaults +
     /// config.json `tuning`, + the tuning.json when present) as
     /// pretty JSON on stdout and exit 0. For the harness and the dev tab.
@@ -403,6 +407,7 @@ struct Options {
             case "--probe-selftest": opts.probeSelfTest = true
             case "--resilience-selftest": opts.resilienceSelfTest = true
             case "--compile-model-cache": opts.compileModelCache = value(flag)
+            case "--check-model-cache": opts.checkModelCache = value(flag)
             case "--print-tuning": opts.printTuning = true
             case "--ui-demo": opts.uiDemo = true
             case "--ui-onboarding-demo": opts.uiOnboardingDemoScenario = value(flag)
@@ -554,6 +559,7 @@ struct Options {
             opts.ttl = UIOnboardingDemoEntrypoint.defaultTTL
         }
         var runsWithoutModel = opts.probe || opts.printTuning || opts.compileModelCache != nil
+            || opts.checkModelCache != nil
         runsWithoutModel = runsWithoutModel || opts.hotkeyTest || opts.uiSelfTest
             || opts.onboardingSelfTest || opts.uiDemo || opts.probeSelfTest
             || opts.resilienceSelfTest || opts.uiOnboardingDemoScenario != nil || opts.replay != nil
@@ -3345,6 +3351,15 @@ final class Pipeline {
     private func releaseRegionCovers(observed: CGFloat) {
         let now = CFAbsoluteTimeGetCurrent()
         regionReleaseUntil = now + Self.regionReleaseSecs
+        // Both edges on a clock, not on the next frame: lifting or restoring
+        // a cover changes no captured pixel (the overlay is excluded), so on
+        // a still screen no frame would come to do either.
+        if opts.overlays { overlays.clearRegions() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.regionReleaseSecs) { [weak self] in
+            // A later trip moved the deadline; its own timer ends it.
+            guard let self, !self.regionsReleased else { return }
+            self.restoreCoversForDetectionView()  // replays the newest held covers
+        }
         releasesSinceAlert += 1
         guard Self.releaseAlertDue(now: now, last: lastReleaseAlertAt) else { return }
         let message = Self.releaseAlertMessage(observed: observed, count: releasesSinceAlert)
@@ -4015,6 +4030,9 @@ if opts.resilienceSelfTest {
 if let package = opts.compileModelCache {
     exit(Detector.installCompiledCacheCommand(packagePath: package))
 }
+if let package = opts.checkModelCache {
+    exit(Detector.checkCompiledCacheCommand(packagePath: package))
+}
 if opts.probe {
     exit(PerfTier.runProbe(opts: opts))
 }
@@ -4364,6 +4382,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let mode = devLogMode { pipelineOpts.logMode = mode }
             pipeline = try Pipeline(opts: pipelineOpts, displayTarget: displayTarget)
         } catch {
+            // A trusted model that will not load is repaired by the root
+            // watchdog, which acts on this marker (Detector.TrustedLoadFailed).
+            if error is Detector.TrustedLoadFailed, let logPath = opts.logPath {
+                let marker = URL(fileURLWithPath: logPath).deletingLastPathComponent()
+                    .appendingPathComponent(Detector.loadFailedMarker).path
+                if !FileManager.default.createFile(atPath: marker, contents: Data("\(error)\n".utf8)) {
+                    FileHandle.standardError.write(Data(("model: could not write \(marker) — the watchdog "
+                        + "will not see that the trusted model failed to load (fix: reinstall the package)\n").utf8))
+                }
+            }
             // The initial model failure can precede FrameLogger construction.
             // Keep the repair UI alive on the first launch and on retries.
             holdHeartbeat = HoldHeartbeat.pipelineFailed(

@@ -394,6 +394,29 @@ enum ResilienceSelfTest {
                   && !fm.fileExists(atPath: guardedEntry.path),
               "result=\(missingEntry)")
 
+        // `--check-model-cache` (watchdog.sh): the agent's own rule, one word
+        // first. Entry still absent here.
+        check("check-model-cache: an absent entry reads missing <expected path>",
+              Detector.checkCompiledCache(source: guardedPkg, owner: me) == "missing \(guardedEntry.path)")
+        plantEntry()
+        check("check-model-cache: a trusted entry reads ok <path>",
+              Detector.checkCompiledCache(source: guardedPkg, owner: me) == "ok \(guardedEntry.path)")
+        check("check-model-cache: an entry owned by another uid reads untrusted",
+              Detector.checkCompiledCache(source: guardedPkg, owner: stranger).hasPrefix("untrusted \(guardedEntry.path) — "))
+        // A trusted entry that will not load: a protected source neither
+        // deletes it nor compiles a copy; it throws TrustedLoadFailed for the
+        // watchdog to act on.
+        trustBefore = compiles
+        let unloadable = Result { try Detector.resolveModel(
+            source: guardedPkg, identity: guardedIdentity,
+            trust: Detector.CacheTrust(owner: me, protected: true),
+            compile: compile, load: { url -> String in throw LoadFailed(path: url.path) }, warn: warn) }
+        var unloadableIsTrusted = false
+        if case .failure(let e) = unloadable { unloadableIsTrusted = e is Detector.TrustedLoadFailed }
+        check("a protected trusted entry that will not load ⇒ TrustedLoadFailed, no compile",
+              unloadableIsTrusted && compiles == trustBefore, "result=\(unloadable)")
+        try? fm.removeItem(at: guardedEntry)
+
         // Install-time compile (`--compile-model-cache`, run as root by
         // configure-install.sh): lands exactly where the agent looks, with
         // modes the trust rule accepts, and prunes the stale entries it owns.

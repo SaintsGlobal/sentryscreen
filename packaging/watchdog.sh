@@ -1001,35 +1001,63 @@ report_wrapper_marker() {  # uid file tripped|expired|env-scrub
 # account's own temp folder when that entry was missing, and a Standard account
 # owns that folder, so it could swap the compiled model between compile and
 # load for one that never fires. Now the agent refuses and shows the failure,
-# and the repair is here, as root: when the expected entry is missing or not
-# wholly root-owned and unwritable by others, rebuild it with the command
-# configure-install.sh runs, then restart the agents so they load it.
+# and the repair is here, as root. The binary answers which entry it expects
+# and whether it passes its trust rule (`--check-model-cache`, the agent's own
+# code: no shell copy of the naming rule to drift from it). Rebuild when it is
+# missing or untrusted, or when an agent reported that it will not load
+# (Detector.loadFailedMarker, newer than the entry), then restart the agents.
 # MEASURED 2026-10-16 (Mac Studio, four installs): the compile took 54–73 ms.
-# The expected name comes from model-identity.tsv, the same digest the agent
-# keys on (Detector.manifestDigest); without a matching manifest any
-# <stem>.*.mlmodelc counts, and the agent's own check stays the judge.
+# MODEL_REBUILD_MIN_SECS bounds the load-failure route: that marker sits in a
+# directory the account owns, so a child can write it, and each rebuild
+# restarts every agent. ASSUMED: one rebuild an hour is plenty for a real
+# failure and makes a forged marker worth one restart an hour at most.
+MODEL_REBUILD_MIN_SECS=3600
 check_model_cache() {
-  local support="/Library/Application Support/SentryScreen" model stem sha entry bad out
+  local support="/Library/Application Support/SentryScreen" model bin out status detail bad="" uid marker now last
   model="$(/usr/bin/plutil -extract model raw -o - "$support/config.json" 2>/dev/null)" || return 0
   case "$model" in "$support"/*.mlpackage) ;; *) return 0 ;; esac
   [ -d "$model" ] || return 0
-  stem="${model##*/}"; stem="${stem%.mlpackage}"
-  sha="$(/usr/bin/awk -F'\t' -v p="${model##*/}" '$1=="payload_path"{ok=($2==p)} $1=="sha256"{s=$2} END{if(ok)print s}' \
-    "$support/model-identity.tsv" 2>/dev/null)"
-  bad="missing"
-  for entry in "$support/$stem".${sha:+manifest-$sha.}*mlmodelc; do
-    [ -d "$entry" ] && [ ! -L "$entry" ] || continue
-    if [ -z "$(/usr/bin/find "$entry" \( ! -user 0 -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit 2>/dev/null)" ]; then
-      bad=""
-      break
-    fi
-    bad="untrusted $entry"
-  done
-  [ -n "$bad" ] || { stamp_changed model-cache ok >/dev/null || true; return 0; }
+  bin="$support/SentryScreen.app/Contents/MacOS/sentry-screen"
+  out="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root "$bin" --check-model-cache "$model" 2>/dev/null | head -n 1)"
+  status="${out%% *}"; detail="${out#* }"
+  case "$status" in
+    ok)
+      for uid in $UIDS; do
+        marker="$LOG_ROOT/$uid/MODEL_LOAD_FAILED"
+        if [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$marker" -nt "$detail" ]; then
+          bad="present but reported unloadable by uid $uid"
+        fi
+      done
+      if [ -z "$bad" ]; then
+        stamp_changed model-cache ok >/dev/null || true
+        return 0
+      fi
+      now="$(date +%s)"; last="$(stamp_value model-cache-rebuilt-at)"
+      case "$last" in ''|*[!0-9]*) last=0 ;; esac
+      if [ $((now - last)) -lt "$MODEL_REBUILD_MIN_SECS" ]; then
+        if stamp_changed model-cache waiting; then
+          alert ALERT "trusted compiled model $detail is $bad, but it was rebuilt $((now - last)) s ago — waiting (budget MODEL_REBUILD_MIN_SECS=$MODEL_REBUILD_MIN_SECS; fix: reinstall the package if protection stays off)"
+        fi
+        return 0
+      fi
+      ;;
+    missing|untrusted) bad="$status: $detail" ;;
+    *)
+      if stamp_changed model-cache "check:$status"; then
+        alert ALERT "trusted compiled model could not be checked for $model (observed: ${out:-no output}) — protection stays off until it can (fix: reinstall the package)"
+      fi
+      failed=1
+      return 0
+      ;;
+  esac
   if out="$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root \
-      "$support/SentryScreen.app/Contents/MacOS/sentry-screen" --compile-model-cache "$model" 2>&1)"; then
-    alert ALERT "trusted compiled model was $bad beside $model — rebuilt as root ($(printf '%s' "$out" | tr '\n' ' ')); restarting the agents so they load it (tamper or failed install: model-cache-repaired)"
+      "$bin" --compile-model-cache "$model" 2>&1)" \
+    && [ "$(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root "$bin" --check-model-cache "$model" 2>/dev/null | head -n 1 | cut -d' ' -f1)" = ok ]; then
+    alert ALERT "trusted compiled model was $bad — rebuilt as root ($(printf '%s' "$out" | tr '\n' ' ')); restarting the agents so they load it (tamper or failed install: model-cache-repaired)"
+    stamp_set model-cache-rebuilt-at "$(date +%s)" || true
     stamp_changed model-cache ok >/dev/null || true
+    # An old MODEL_LOAD_FAILED is left where it is (root deletes nothing in a
+    # directory the account owns): the rebuilt entry is newer, so it is stale.
     for uid in $UIDS; do
       launchctl kickstart -k "gui/$uid/$LABEL" 2>>"$ALERTS" \
         || { alert ALERT "kickstart -k FAILED for gui/$uid after the model cache repair"; failed=1; }
@@ -1038,7 +1066,7 @@ check_model_cache() {
     # Once per failure episode: a compile that keeps failing must not write
     # a line every pass.
     if stamp_changed model-cache failed; then
-      alert ALERT "trusted compiled model $bad beside $model and the rebuild FAILED ($(printf '%s' "$out" | tr '\n' ' ')) — protection stays off until it exists (fix: reinstall the package)"
+      alert ALERT "trusted compiled model was $bad and the rebuild FAILED ($(printf '%s' "$out" | tr '\n' ' ')) — protection stays off until it exists (fix: reinstall the package)"
     fi
     failed=1
   fi

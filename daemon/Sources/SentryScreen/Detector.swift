@@ -314,6 +314,31 @@ final class Detector {
         }
     }
 
+    /// `--check-model-cache <package>` (watchdog.sh, as root, every pass): the
+    /// agent's own rule for the trusted entry — the same identity, name and
+    /// trust check — so the watchdog never re-derives the name in shell (a
+    /// shell copy that disagreed would rebuild and restart every pass). One
+    /// line on stdout, always exit 0: `ok <entry>`, `missing <entry>`,
+    /// `untrusted <entry> — <reason>` or `unidentified <package>`. No compile
+    /// and no CoreML load, so a pass stays cheap.
+    static func checkCompiledCacheCommand(packagePath: String) -> Int32 {
+        print(checkCompiledCache(source: URL(fileURLWithPath: packagePath)))
+        return 0
+    }
+
+    /// The line `--check-model-cache` prints. Pure apart from reads;
+    /// `--resilience-selftest` checks each answer.
+    static func checkCompiledCache(source: URL, owner: uid_t? = nil) -> String {
+        guard let identity = identity(for: source) else { return "unidentified \(source.path)" }
+        let entry = cacheCandidates(for: source, identity: identity, includeUserCache: false)[0]
+        var info = stat()
+        guard lstat(entry.path, &info) == 0 else { return "missing \(entry.path)" }
+        if let problem = untrustedReason(entry, owner: owner ?? CacheTrust.of(source).owner) {
+            return "untrusted \(entry.path) — \(problem)"
+        }
+        return "ok \(entry.path)"
+    }
+
     /// `--compile-model-cache <package>` (configure-install.sh, as root): the
     /// trusted entry next to the source, compiled once at install so no
     /// launch has to compile or trust a user-writable copy. Staged beside the
@@ -401,6 +426,15 @@ final class Detector {
             // nothing to blame, nothing to delete, and a second ~20 s compile
             // would change nothing (receipt above).
             guard first.origin == "cache" else { throw error }
+            // A protected source cannot delete or replace its trusted entry
+            // and never compiles its own (`UntrustedOnly`), so the repair is
+            // the root watchdog's: main.swift leaves MODEL_LOAD_FAILED in this
+            // account's log dir and watchdog.sh rebuilds the entry.
+            if trust.protected {
+                throw TrustedLoadFailed(description: "the trusted compiled model at "
+                    + "\(first.url.path) is present but will not load (\(error)) — the watchdog "
+                    + "rebuilds it as root within a minute (fix: reinstall the package if this persists)")
+            }
             warn("WARNING: tripwire MODEL_CACHE_RECOVERY, limit 1 recompile per launch, "
                 + "observed a compiled-model load failure at \(first.url.path) (\(error)) — "
                 + "deleting that cache entry and recompiling once "
@@ -440,6 +474,11 @@ final class Detector {
 
     /// A protected source with no trusted compiled entry.
     struct UntrustedOnly: Error, CustomStringConvertible { let description: String }
+    /// A protected source whose trusted entry exists but will not load.
+    struct TrustedLoadFailed: Error, CustomStringConvertible { let description: String }
+    /// The marker an agent leaves in its own log dir for `TrustedLoadFailed`;
+    /// watchdog.sh rebuilds the entry when it is newer than the entry.
+    static let loadFailedMarker = "MODEL_LOAD_FAILED"
 
     private static func compiledURL(
         source: URL,
@@ -492,8 +531,10 @@ final class Detector {
         // shows the failure and the root watchdog rebuilds the trusted entry
         // (watchdog.sh check_model_cache), then restarts this agent.
         if trust.protected {
-            throw UntrustedOnly(description: "no trusted compiled model at "
-                + "\(candidates.map(\.path).joined(separator: ", ")) — refusing to compile a copy "
+            throw UntrustedOnly(description: (candidates.isEmpty
+                    ? "the model at \(source.path) cannot be identified, so no trusted compiled entry can be named"
+                    : "no trusted compiled model at \(candidates.map(\.path).joined(separator: ", "))")
+                + " — refusing to compile a copy "
                 + "this account could change; the watchdog rebuilds it as root within a minute "
                 + "(fix: reinstall the package if this persists; configure-install.sh compiles it)")
         }

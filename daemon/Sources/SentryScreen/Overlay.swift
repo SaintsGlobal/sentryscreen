@@ -584,6 +584,23 @@ final class OverlayManager {
         extrapolator.reset()
     }
 
+    /// Region covers only, at once, for the full-coverage release
+    /// (`Pipeline.releaseRegionCovers`): active and lingering layers go now,
+    /// not after `lingerSyncs`, and the display-link tick has no region rects
+    /// left to replay. Curtains, their clamp state and the window tracker are
+    /// untouched. Main thread.
+    func clearRegions() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in active.values { layer.shape.removeFromSuperlayer() }
+        for entry in lingering { entry.layer.shape.removeFromSuperlayer() }
+        active.removeAll()
+        lingering.removeAll()
+        CATransaction.commit()
+        lastRegions.removeAll()
+        lastPainted.removeAll()
+    }
+
     /// Display topology changed. Main thread.
     ///
     /// `sync` re-reads the screen and re-sets the extrapolator's size on every
