@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- New default block floors for the exposed classes, on the model's 0–1 score:
+  female breast 0.90, female genitalia 0.70, male genitalia 0.90, buttocks 0.80,
+  anus 0.70 (all were 0.50). The covered classes stay at 0.60, and an exposed box
+  mostly inside a covered box of the same part still counts as covered (overlap
+  0.90). The higher floors cut false alarms on swimwear. They also miss more small
+  or partial content, because the model scores small boxes lower.
+- The zoom pass (`zoomTiles`) is now on by default: each evaluated frame also
+  checks one quarter of the screen at about twice the zoom, which finds more small
+  content and costs about 1.6× the detector time per evaluated frame (measured
+  offline; not yet measured on live screens). `--print-tuning`, the tuning log
+  record and the Developer tab's Copy now always include `zoomTiles`, so turning
+  it off survives a save.
+- If you saved anything in Settings › Developer before this release, your
+  `parent/tuning.json` still holds the old values. Press **Reset to shipped
+  defaults** to adopt the new ones.
+
 ## 0.4.2 (build 29)
 
 Security follow-ups from the 0.4.1 review.

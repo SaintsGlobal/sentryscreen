@@ -4,19 +4,28 @@ import Foundation
 // `--ui-selftest` group `zoom` (SENTRY_UI_SELFTEST_CASE=zoom): the zoom
 // (tiling) prototype, `ZoomTiles.swift`. Pure, synthetic detections only: no
 // window, no detector, no image.
-//  - both flavors: production refuses the `zoomTiles` key by name, so
-//    neither config.json nor tuning.json can turn it on; the default dump
-//    never carries it;
-//  - off by default, parse/dump, tile geometry and mapping back to
-//    the frame, rotation, the cut-box drop and the merge.
+//  - ON by default since 2026-10-20 (receipt at `TuningPolicy.zoomTiles`),
+//    and the dump always carries the key, so an OFF policy survives a
+//    dump → parse round trip over the ON defaults;
+//  - parse/dump, tile geometry and mapping back to the frame, rotation,
+//    the cut-box drop and the merge.
 extension UISelfTest {
     static func caseZoomTiles() {
         func json(_ s: String) -> [String: Any] {
             (try? JSONSerialization.jsonObject(with: Data(s.utf8))) as? [String: Any] ?? [:]
         }
         let d = TuningPolicy.defaults
-        check("zoom: the default tuning dump has no zoomTiles key", !d.jsonString().contains("zoomTiles"))
-        let on = TuningPolicy.parse(json(#"{"zoomTiles": true}"#), base: d)
+        check("zoom: the default tuning dump carries zoomTiles true (Copy / --print-tuning / tuning event)",
+            d.jsonString().contains("\"zoomTiles\":true"), d.jsonString())
+        // The off switch must survive a save: the Developer tab writes the
+        // dump, and the daemon layers it over the ON defaults.
+        var off = d
+        off.zoomTiles = false
+        let reparsed = TuningPolicy.parse(UIDevTuning.configObject(off), base: d)  // what the tab writes
+        check("zoom: an OFF policy dumps zoomTiles false and parses back OFF over the ON defaults",
+            off.jsonString().contains("\"zoomTiles\":false") && (try? reparsed.get())?.zoomTiles == false,
+            "\(off.jsonString()) → \(reparsed)")
+        let on = TuningPolicy.parse(json(#"{"zoomTiles": true}"#), base: off)
         zoomTuning(d, on, json)
     }
 
@@ -24,9 +33,9 @@ extension UISelfTest {
         _ d: TuningPolicy, _ on: Result<TuningPolicy, TuningPolicy.ParseError>,
         _ json: (String) -> [String: Any]
     ) {
-        check("zoom: off by default", !d.zoomTiles)
+        check("zoom: on by default", d.zoomTiles)
         if case let .success(p) = on {
-            check("zoom: tuning.json turns it on and the dump says so",
+            check("zoom: tuning.json turns it back on over an off base and the dump says so",
                 p.zoomTiles && p.jsonString().contains("\"zoomTiles\":true"), p.jsonString())
         } else {
             check("zoom: zoomTiles true parses", false, "\(on)")

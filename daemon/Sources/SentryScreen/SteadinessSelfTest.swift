@@ -72,10 +72,12 @@ extension UISelfTest {
         let fbc = Detection(label: "FEMALE_BREAST_COVERED", confidence: 0.45, box: box)
         check("steadiness: a covered class under Standard is never kept, tracked or not",
             d.filter([fbc], mode: .standard, blockFaces: false, screen: screen, tracked: covered).blocked.isEmpty)
-        // The size staircase keeps against its own floor.
+        // The size staircase keeps against its own floor. 0.95: a step above
+        // the shipped 0.90 FBE base (2026-10-20), so the step's keep floor
+        // (0.80) and the base's (0.75) are different numbers.
         var stepped = d
-        stepped.standard["FEMALE_BREAST_EXPOSED"]?.thresholdSteps = [.init(minPt: 64, threshold: 0.9)]
-        let stepKeep = stepped.keepFloor(0.9)
+        stepped.standard["FEMALE_BREAST_EXPOSED"]?.thresholdSteps = [.init(minPt: 64, threshold: 0.95)]
+        let stepKeep = stepped.keepFloor(0.95)
         check("steadiness: a tracked box under a size step's floor is kept down to that step's keep floor",
             blocks(stepped, stepKeep, tracked: covered) == (true, 1)
                 && blocks(stepped, stepKeep - 0.001, tracked: covered) == (false, 0))
@@ -161,7 +163,8 @@ extension UISelfTest {
 
     private static func steadinessWeakTrace() {
         let screen = CGSize(width: 1920, height: 1080)
-        let kept = [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.8, box: CGRect(x: 0.2, y: 0.2, width: 0.1, height: 0.1))]
+        // 0.95: above the shipped 0.90 FBE floor, so the policy box blocks.
+        let kept = [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.95, box: CGRect(x: 0.2, y: 0.2, width: 0.1, height: 0.1))]
         let weak = [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.2, box: CGRect(x: 0.5, y: 0.5, width: 0.1, height: 0.1)),
                     Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.07, box: CGRect(x: 0.7, y: 0.2, width: 0.1, height: 0.1))]
         var input = DetectionTraceBuilder.Inputs(
@@ -195,14 +198,15 @@ extension UISelfTest {
         // Kept outcome text (hysteresis).
         let at = CGRect(x: 0.5, y: 0.5, width: 0.1, height: 0.1)
         var k = input
-        k.raw = [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.43, box: at)]
+        // Under the shipped 0.90 FBE start floor, over its 0.75 keep floor.
+        k.raw = [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.78, box: at)]
         k.weak = []
         k.tuning.keepGap = 0.15  // shipped off; the receipted value to enable
-        k.tracked = .init(boxes: [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.55, box: at)])
+        k.tracked = .init(boxes: [Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.92, box: at)])
         let kt = DetectionTraceBuilder.build(k, builtAt: 0, appName: { _ in nil })
         let ke = DetectionViewCopy.explain(kt.trace.boxes[0], trace: kt.trace, mode: .outlineOverCovers)
         check("steadiness: kept — explained with its keep floor and start floor",
-            ke.lines.contains("kept: 0.43 ≥ keep 0.35 (tracked; starts at 0.50)"), "\(ke.lines)")
+            ke.lines.contains("kept: 0.78 ≥ keep 0.75 (tracked; starts at 0.90)"), "\(ke.lines)")
         check("steadiness: kept — the mirror counts the kept box as blocked", kt.mirrorBlocked == 1)
     }
 }
