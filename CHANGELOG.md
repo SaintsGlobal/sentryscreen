@@ -16,8 +16,10 @@
   Close returns to Settings.
 - The menu bar icon shows a green check while SentryScreen is protecting and every
   setup check passes: Screen Recording is allowed, the installed parts are present
-  and both background jobs are registered. If any check fails the check mark goes
-  away; paused and needs-attention badges are unchanged.
+  and both background jobs are registered. The jobs are re-checked every 30
+  seconds while the app runs, and the check also needs a live screen capture. If
+  any check fails the check mark goes away; paused and needs-attention badges are
+  unchanged.
 
 ## 0.4.2 (build 29)
 

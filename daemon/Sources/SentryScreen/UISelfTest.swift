@@ -5646,10 +5646,11 @@ enum UISelfTest {
             good.tiffRepresentation != plain.tiffRepresentation)
         // setupHealthy needs EVERY check; each one alone failing turns it off.
         func healthy(installed: Bool = true, screen: Bool = true,
-            components: UIOnboardingComponentHealth = .healthy, services: Bool? = true, failed: Bool = false) -> Bool
+            components: UIOnboardingComponentHealth = .healthy, services: Bool? = true, failed: Bool = false,
+            live: Bool = true) -> Bool
         {
             UIOnboardingRuntime.setupHealthy(installedMode: installed, screenRecordingApproved: screen,
-                components: components, servicesVerified: services, failedHealthSource: failed)
+                components: components, servicesVerified: services, failedHealthSource: failed, captureLive: live)
         }
         check("glyph: setup healthy when every check passes", healthy())
         check("glyph: a development run is never all good", !healthy(installed: false))
@@ -5659,6 +5660,17 @@ enum UISelfTest {
         check("glyph: launchd jobs not yet checked → no green check", !healthy(services: nil))
         check("glyph: launchd jobs failed → no green check", !healthy(services: false))
         check("glyph: an active health failure → no green check", !healthy(failed: true))
+        check("glyph: a dead capture stream → no green check", !healthy(live: false))
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        func due(installed: Bool = true, inFlight: Bool = false, last: Date?, at: TimeInterval) -> Bool {
+            UIOnboardingRuntime.serviceRecheckDue(
+                installedMode: installed, inFlight: inFlight, last: last, now: t0.addingTimeInterval(at))
+        }
+        check("glyph: the first service recheck is due at once", due(last: nil, at: 0))
+        check("glyph: a service recheck is not due 29 s after the last", !due(last: t0, at: 29))
+        check("glyph: a service recheck is due 30 s after the last", due(last: t0, at: 30))
+        check("glyph: one service recheck at a time", !due(inFlight: true, last: t0, at: 60))
+        check("glyph: a development run never rechecks launchd", !due(installed: false, last: nil, at: 0))
     }
 }
 
