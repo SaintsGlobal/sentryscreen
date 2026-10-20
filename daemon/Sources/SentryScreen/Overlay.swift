@@ -1293,13 +1293,19 @@ final class RegionLayer {
     /// form never fit there and the old single-string rule hid the label.
     /// "Blocked" (~50 pt) fits every thumbnail either receipt measured.
     static let labelLadder = ["Content blocked", "Blocked"]
-    /// Curtains (whole-window covers) lead with the way out. Owner-approved
-    /// copy 2026-10-18. ⌘W, not ⌘Q: it closes the covered tab or window, not
-    /// the whole app and every other tab in it. "Click here" first because
-    /// the keys go to the frontmost window, which may not be the covered one;
-    /// covers are click-through, so the click focuses the window underneath.
+    /// Curtains (whole-window covers) lead with the way out. ⌘W, not ⌘Q: it
+    /// closes the covered tab or window, not the whole app and every other
+    /// tab in it. A click first because the keys go to the frontmost window,
+    /// which may not be the covered one.
+    /// COPY 2026-10-20 (owner), replacing 2026-10-18's "click here, then
+    /// press ⌘W to close": covers are click-through, so "click here" sent the
+    /// click to the covered content itself (a link, a play button). The
+    /// title bar is outside the curtain (`Curtain.chromeStripPt` leaves the
+    /// window's top strip bare), so clicking it focuses the window and
+    /// touches nothing covered. Shorter, too: `--ui-selftest` "cover label"
+    /// prints the measured width and pins its range.
     /// Region covers keep the short ladder: they sit on images, not windows.
-    static let curtainHint = "Content blocked — click here, then press ⌘W to close"
+    static let curtainHint = "Content blocked — click the title bar, then press ⌘W"
     static let curtainLadder = [curtainHint] + labelLadder
     static let labelFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     /// Margin the text keeps from the cover's edge, per side, both axes.

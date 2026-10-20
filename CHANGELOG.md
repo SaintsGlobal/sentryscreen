@@ -17,6 +17,10 @@
 - If you saved anything in Settings › Developer before this release, your
   `parent/tuning.json` still holds the old values. Press **Reset to shipped
   defaults** to adopt the new ones.
+- Window covers now say "Content blocked — click the title bar, then press ⌘W".
+  Covers let clicks through, so the old "click here" sent the click to the covered
+  content itself. The title bar is never covered, so clicking it only brings the
+  window to the front.
 
 ## 0.4.2 (build 29)
 
