@@ -448,6 +448,32 @@ extension UISelfTest {
         check("rows: the ✓ row reads \"curtain dropped\"",
             UIDeveloperSettingsSection.rowLine(cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }!)
                 .hasPrefix("✓ FBE 0.90 · floor 0.50 ") == true)
+        // covered-beats-exposed under Strict: the exposed row is covered at
+        // the COVERED floor, and says so (owner 2026-10-20).
+        do {
+            let jr = TuningReadout()
+            var strict = base
+            strict.coveredBeatsExposed = true
+            let screen = CGSize(width: 1920, height: 1080)
+            let raw = [
+                Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.71,
+                    box: CGRect(x: 0.30, y: 0.30, width: 0.05, height: 0.08)),
+                Detection(label: "FEMALE_BREAST_COVERED", confidence: 0.66,
+                    box: CGRect(x: 0.28, y: 0.28, width: 0.12, height: 0.16)),
+            ]
+            let f = strict.filter(raw, mode: .strict, blockFaces: false, screen: screen)
+            jr.record(raw: raw, filtered: f, tuning: strict, mode: .strict, blockFaces: false,
+                screen: screen, now: t0)
+            let row = jr.snapshot(now: t0).rows.first { $0.code == "FBE" }
+            check("rows: a relabelled exposed box says it was judged as covered",
+                row?.judgedAs == "FEMALE_BREAST_COVERED"
+                    && row.map { UIDeveloperSettingsSection.scoreText($0).contains("covered floor") } == true
+                    && row.map { UIDeveloperSettingsSection.statusText($0) } == "covered as FEMALE_BREAST_COVERED (covered-beats-exposed)",
+                row.map { UIDeveloperSettingsSection.rowLine($0) } ?? "no FBE row")
+            let plain = jr.snapshot(now: t0).rows.first { $0.code == "covered" }
+            check("rows: a plain covered row keeps \"floor\"",
+                plain.map { UIDeveloperSettingsSection.scoreText($0).contains(" · floor ") } == true && plain?.judgedAs == nil)
+        }
         if let aRow {
             let meta = UIDeveloperSettingsSection.metaText(aRow)
             check("rows: the second line is size · app · age",
