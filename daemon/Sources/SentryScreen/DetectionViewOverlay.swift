@@ -99,6 +99,9 @@ struct DetectionViewLayout {
     var hiddenNonPolicy = 0
     /// Chips that found no free spot and were placed over another label.
     var crowded = 0
+    /// The zoom tile this frame ran (`DetectionTrace.zoomTile`), in layout
+    /// points; drawn as one dashed outline under every box.
+    var zoomTile: CGRect?
 
     struct Options {
         var mode: DetectionViewMode
@@ -189,6 +192,7 @@ struct DetectionViewLayout {
         var taken: [CGRect] = [L.badge.frame, L.hud.frame, L.legend.frame].filter { !$0.isEmpty }
         let screen = CGRect(origin: .zero, size: size)
         guard let t else { return L }
+        L.zoomTile = t.zoomTile.map { points($0, size) }
         // Every drawn box's outline and interior: a chip avoids them when it
         // can, so it never hides another box or its line.
         let boxOutlines = visible.map { points($0.rect, size) }
@@ -377,6 +381,10 @@ final class DetectionViewOverlay {
     private(set) var size: CGSize
     private let scale: CGFloat
     private let outlines = CALayer()
+    /// The zoom tile outline (`DetectionViewLayout.zoomTile`).
+    private let tileOutline = CAShapeLayer()
+    /// Mustard, dashed: no box style uses it, so it never reads as a box.
+    static let tileInk = DetectionViewInk.rgb(214, 165, 58)
     private let leaders = CALayer()
     private let chips = CALayer()
     private let chrome = CALayer()
@@ -409,6 +417,7 @@ final class DetectionViewOverlay {
             content.addSublayer(l)
         }
         for c in [hud, legend, badge] { chrome.addSublayer(c.bg) }
+        outlines.addSublayer(tileOutline)
         content.isHidden = true
         if let host = window?.contentView {
             host.layer = root
@@ -499,6 +508,13 @@ final class DetectionViewOverlay {
             let c = ChipLayers()
             chips.addSublayer(c.bg)
             chipPool.append(c)
+        }
+        if let tile = L.zoomTile {
+            tileOutline.isHidden = false
+            stroke(tileOutline, path: CGPath(rect: flip(tile), transform: nil), color: Self.tileInk, width: 1.5,
+                dash: [6, 4])
+        } else {
+            tileOutline.isHidden = true
         }
         var leaderIndex = 0
         for (i, item) in L.items.enumerated() {

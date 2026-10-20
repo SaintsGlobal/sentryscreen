@@ -1,5 +1,116 @@
 # Changelog
 
+## Unreleased
+
+- `--print-tuning`, the tuning log record, `parent/tuning.json` and the Developer
+  tab's Copy now write numbers as short decimals (`0.7`, not
+  `0.69999999999999996`). The values are unchanged.
+- New default block floors for the exposed classes, on the model's 0–1 score:
+  female breast 0.90, female genitalia 0.70, male genitalia 0.90, buttocks 0.80,
+  anus 0.70 (all were 0.50). The covered classes stay at 0.60, and an exposed box
+  mostly inside a covered box of the same part still counts as covered (overlap
+  0.90). The higher floors cut false alarms on swimwear. They also miss more small
+  or partial content, because the model scores small boxes lower.
+- The zoom pass (`zoomTiles`) is now on by default: each evaluated frame also
+  checks one quarter of the screen at about twice the zoom, which finds more small
+  content and costs about 1.6× the detector time per evaluated frame (measured
+  offline; not yet measured on live screens). `--print-tuning`, the tuning log
+  record and the Developer tab's Copy now always include `zoomTiles`, so turning
+  it off survives a save.
+- If you saved anything in Settings › Developer before this release, your
+  `parent/tuning.json` still holds the old values. Press **Reset** to adopt the
+  new ones.
+- Settings › Developer is shorter. Each class shows its name and threshold, and
+  its size steps, minimum box and entry frames open from the name; a closed class
+  names any of those that differ from the defaults. The size-steps help is a
+  tooltip, the buttons are **Reset** and **Copy JSON**, the Detection view's four
+  drawing options fold under **Options**, and the Tiles view shows one line until
+  the first tile pass. In Last 60 s each row's floor moved to its second line, a
+  key explains the row symbols, covered classes use their own codes (FBC, FGC,
+  BC), and the suppression counts fold under **Removed by rules**.
+- Settings › Developer's Last 60 s records only while the Developer tab is open
+  and for 10 minutes after it closes, so a Mac where nobody opens the tab no
+  longer does that work on every frame.
+- Removing the app is called **Uninstall…** everywhere: the popover, Settings,
+  the Setup window, the confirmation and the Uninstaller. In the popover it sits
+  beside Settings… instead of on a line of its own (it keeps its own last line
+  while protection is interrupted). With no PIN set, Settings offers "Set a PIN…"
+  (not "Change PIN…") and says that changes ask you to set one.
+- Settings › General has no "More settings" fold. Under Recent activity a
+  **Parent** card holds Set a PIN… / Change PIN…, **Diagnostic report…** (what
+  Review Report opened) and, for administrators, **Uninstall…**. "Forgot PIN?" is
+  on the Enter PIN screen, and the version is small text at the bottom left of
+  Settings.
+- Settings › **Developer** asks for the parent PIN before it opens (or for a new
+  PIN, if none is set). Once open it stays unlocked until the popover closes, and
+  its changes do not ask again.
+- The Developer tab's Tiles view has a **Zoomed tile** view: pick tile 1–4 and see
+  it at full width, with its boxes and, with the blurred preview on, its
+  thumbnail, plus where it is and how far it zooms (about 1.9×). It is for
+  checking that the zoom pass looks at the part of the screen it should. The
+  four-up drawing outlines the zoomed tile dashed, and box labels sit on a backing
+  so they read over any thumbnail. Turning the preview on returns you to the Tiles
+  row after the PIN.
+- The Tiles preview has a **Blur** checkbox, on by default and on again each time
+  the preview turns off. Off, the tiles show sharp and unfilled, as the detector
+  saw them, at 640 px wide, so you can read what the zoom pass looked at. The
+  preview checkbox is now called **Show preview**.
+- The Tiles view fits on one screen: the four tiles sit beside the tile picker and
+  the zoomed tile under them, so you no longer scroll between them. Tapping a tile
+  in the four-up zooms it.
+- Every drawn box has a label. In the Tiles view a label that would leave the
+  drawing (a box at a tile's top or right edge) moves inside it, and the Detection
+  view's **Show box labels** is now on by default.
+- The Tiles view records tile passes only while its row is open on screen, so a
+  closed row costs nothing per frame.
+- The exit summary in the log now covers the whole run, including the last
+  partial minute.
+- Window covers now say "Content blocked — click the title bar, then press ⌘W".
+  Covers let clicks through, so the old "click here" sent the click to the covered
+  content itself. The title bar is never covered, so clicking it only brings the
+  window to the front.
+- Settings › Recent activity shows the three newest rows and scrolls to the rest
+  (still up to ten).
+- The "Start at login" row is gone. It only said that the system starts
+  SentryScreen at login, which is unchanged.
+- The menu bar icon can no longer be hidden: the "Show menu bar icon" setting is
+  gone, and so is the Control + Option + Command + S shortcut that brought a hidden
+  icon back. If an older install hid the icon, it reappears; the stored setting is
+  still read but ignored.
+- Settings › Diagnostics is now a single **Diagnostic report…** row. What a report
+  contains and never contains moved to the top of the review, so it is read before
+  Send. After Send the review stays open and says whether the report arrived;
+  Close returns to Settings, which shows the same outcome under the row.
+- The menu bar icon shows a green check while SentryScreen is protecting and every
+  setup check passes: Screen Recording is allowed, the installed parts are present
+  and both background jobs are registered. The jobs are re-checked every 30
+  seconds while the app runs, and the check also needs a live screen capture. If
+  any check fails the check mark goes away; paused and needs-attention badges are
+  unchanged.
+- Settings › Developer › "Last 60 s" now lists one row per detection track (a
+  class in one window at one place on screen) instead of per-class totals. Rows
+  are ranked by their best score, fading with age (half-life 15 s), and re-sorted
+  once a second. Each row shows whether that detection dropped a window cover (✓),
+  was covered (◼), was removed by a rule and which one (⊘), or stayed under its
+  floor (○); the class, a score bar with the floor marked ("0.93 · floor 0.90"),
+  box size, app and age. Rows just under their floor are highlighted. Freeze
+  stops re-sorting for up to 30 seconds, Clear empties the list, and Copy readout
+  copies every row with the summary lines. Rows hold class names, numbers and the
+  app name only. The table holds at most 512 tracks; past that the weakest row is
+  dropped, counted on the tab and written to the log.
+- Settings › Developer has a **Tiles** row (collapsed, shown only while
+  `zoomTiles` is on) that shows what the zoom pass is doing: a 2×2 diagram of the
+  screen with the tile being checked now highlighted and each tile's latest boxes
+  outlined with class and score; boxes only the zoom found are drawn solid. It
+  shows no screen pixels. The Detection view also outlines the tile each frame
+  ran.
+- An optional **Show blurred preview** in that row (off by default, behind the
+  parent PIN) adds a heavily blurred thumbnail per tile with every blocked box
+  filled black, at most two per second, kept in memory only. It draws nothing until
+  screen capture has confirmed it no longer sees the popover, and it turns off when
+  the popover closes, on any pause or panic, after 5 minutes, and when
+  `zoomTiles` is turned off.
+
 ## 0.4.2 (build 29)
 
 Security follow-ups from the 0.4.1 review.

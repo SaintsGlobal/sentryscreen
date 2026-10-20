@@ -914,9 +914,93 @@ final class UIOnboardingRuntime {
         reportHealth(.lost(since: Date(), reason: reason))
     }
 
+    /// The last `UIOnboardingServiceChecker` answer this process got (both
+    /// launchd jobs registered): nil until it has run. Read by `setupHealthy`.
+    /// Refreshed by `recheckServicesIfDue` while the app runs, not only at
+    /// launch verification.
+    private(set) var servicesVerified: Bool?
+
+    /// How often the running app re-asks launchd about both jobs, for the
+    /// menu-bar green check (owner 2026-10-20: a job lost after launch must
+    /// take the check away, not wait for the next launch). DERIVED: one
+    /// check is two `launchctl print` calls, 3.6–6.7 ms each (MEASURED,
+    /// receipt at `UIOnboardingServiceChecker.launchctlTimeout`), off the
+    /// main thread; every 30 s is under 0.05 % of one core, and a lost job
+    /// shows within 30 s plus the 1 Hz tick.
+    nonisolated static let serviceRecheckSecs: TimeInterval = 30
+    private var lastServiceRecheck: Date?
+    private var serviceRecheckInFlight = false
+
+    nonisolated static func serviceRecheckDue(installedMode: Bool, inFlight: Bool, last: Date?, now: Date) -> Bool {
+        guard installedMode, !inFlight else { return false }
+        guard let last else { return true }
+        return now.timeIntervalSince(last) >= serviceRecheckSecs
+    }
+
+    /// Called on the 1 Hz settings tick. Installed runs only; one check in
+    /// flight at a time (a wedged launchctl is bounded by its own named
+    /// timeout and logs it). A change in the answer is logged by name.
+    func recheckServicesIfDue(now: Date = Date()) {
+        guard Self.serviceRecheckDue(
+            installedMode: installedMode, inFlight: serviceRecheckInFlight, last: lastServiceRecheck, now: now)
+        else { return }
+        lastServiceRecheck = now
+        serviceRecheckInFlight = true
+        serviceChecker.run { [weak self] result in
+            guard let self else { return }
+            self.serviceRecheckInFlight = false
+            let ok: Bool
+            switch result {
+            case .success: ok = true
+            case let .failure(failure):
+                ok = false
+                if self.servicesVerified != false { self.log("onboarding", "service recheck: " + failure.diagnostic) }
+            }
+            if ok, self.servicesVerified == false { self.log("onboarding", "service recheck: both launchd jobs healthy again") }
+            self.servicesVerified = ok
+        }
+    }
+
+    /// Everything onboarding checks before it calls setup complete, as of
+    /// now, for the menu-bar green check (2026-10-20). REUSES onboarding's
+    /// own checks, no new ones: Screen Recording (`CGPreflightScreenCaptureAccess`,
+    /// the call `captureWasLost` uses, and this runtime's own view of it),
+    /// the installed components including both launchd plists
+    /// (`UIOnboardingInstallationInspector.componentHealth`, file stats,
+    /// cheap enough for the 1 Hz tick), and the last launchd job check
+    /// (`servicesVerified`; launchctl is re-run every `serviceRecheckSecs`,
+    /// not per tick), and a live capture stream (`captureIsLive`, so a
+    /// stream that died takes the check away before health notices). The
+    /// detector is covered by the glyph: a failing detector is not
+    /// Protecting (`UIState.menuBarBadgeOK`). A development run (not
+    /// installed) is never "all good".
+    var setupHealthy: Bool {
+        Self.setupHealthy(
+            installedMode: installedMode,
+            screenRecordingApproved: screenRecordingApproved && CGPreflightScreenCaptureAccess(),
+            components: UIOnboardingInstallationInspector.componentHealth(
+                installedMode: installedMode, modelPath: modelPath),
+            servicesVerified: servicesVerified,
+            failedHealthSource: failedHealthSource != nil,
+            captureLive: captureIsLive())
+    }
+
+    nonisolated static func setupHealthy(
+        installedMode: Bool, screenRecordingApproved: Bool, components: UIOnboardingComponentHealth,
+        servicesVerified: Bool?, failedHealthSource: Bool, captureLive: Bool
+    ) -> Bool {
+        installedMode && screenRecordingApproved && components == .healthy
+            && servicesVerified == true && !failedHealthSource && captureLive
+    }
+
     private func checkRequiredServices(epoch: Int) {
         let expectedCaptureGeneration = captureGenerationEpoch
         serviceChecker.run { [weak self] result in
+            if let self {
+                // Recorded before the staleness guard: whatever this run was
+                // for, it is still the newest answer about the two jobs.
+                if case .success = result { self.servicesVerified = true } else { self.servicesVerified = false }
+            }
             guard let self,
                 self.verificationDeadlineActive,
                 self.frameDeadlineEpoch == epoch,

@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
+import CoreImage
 import CoreVideo
 import Foundation
 
@@ -1466,8 +1467,66 @@ final class Pipeline {
     private var tuningOnRecord: TuningPolicy
     /// TUNING TOOL (UIDevTuning.swift): the Developer tab's 60 s readout.
     /// Set by AppDelegate.startPipeline before `start()`, read on
-    /// detectQueue per frame; nil in every headless mode.
-    var tuningReadout: TuningReadout?
+    /// detectQueue per frame; nil in every headless mode. Setting it
+    /// installs the curtain observers its rows need (windows, ✓).
+    var tuningReadout: TuningReadout? {
+        didSet {
+            tuningReadout?.onLimit = { [logger] in logger.event("tuning-readout", $0) }
+            installCurtainDropObservers()
+        }
+    }
+    /// detectQueue, per step: what the curtain credited (window → indices
+    /// into the step's `blocked`) and dropped this frame, for the readout's
+    /// rows. Filled by the curtain observers during `curtainRects`, read
+    /// and cleared by the readout record right after it.
+    private var readoutWindows: [Int: CGWindowID] = [:]
+    /// detectQueue: this step is in the readout's recording window
+    /// (`TuningReadout.isActive`), read once before `curtainRects`.
+    private var readoutActive = false
+    private var readoutDrops: [TuningReadout.Drop] = []
+    /// The readout's app names, memoized per window (same bound and rule as
+    /// the Detection view's, `DetectionTraceAppNames`). detectQueue only.
+    private lazy var readoutAppNames: DetectionTraceAppNames = {
+        let names = DetectionTraceAppNames()
+        names.onFull = { [logger = self.logger] in logger.event("tuning-readout", $0) }
+        return names
+    }()
+    /// The crop writer's drop handler (`--dev-crop-dir`); composed with the
+    /// readout's by `installCurtainDropObservers`.
+    private var cropCurtainDrop: ((CGWindowID, CGRect?, [Int]) -> Void)?
+
+    /// One `Curtain.onDrop` for both dev observers (crop writer, readout),
+    /// and `onAttribution` while the readout exists. Main thread, before
+    /// `start()`. Observers only: neither changes a curtain decision.
+    private func installCurtainDropObservers() {
+        guard let curtain else { return }
+        let crop = cropCurtainDrop
+        let readout = tuningReadout != nil
+        guard crop != nil || readout else {
+            curtain.onDrop = nil
+            curtain.onAttribution = nil
+            return
+        }
+        curtain.onDrop = { [weak self] _, id, window, sourceIndices in
+            crop?(id, window, sourceIndices)
+            guard let self, readout else { return }
+            var indices = sourceIndices
+            if indices.isEmpty, let window {
+                // Same fallback the crop writer uses for a drop decided on a
+                // walk-skipped tick: this frame's blocked boxes whose centre
+                // lies in the dropped window.
+                indices = cropBlockedThisFrame.indices.filter { index in
+                    let rect = self.screenRect(self.cropBlockedThisFrame[index].box)
+                    return window.contains(CGPoint(x: rect.midX, y: rect.midY))
+                }
+            }
+            readoutDrops.append(TuningReadout.Drop(windowID: id, indices: indices))
+        }
+        curtain.onAttribution = readout ? { [weak self] credited in
+            guard let self else { return }
+            for (w, indices) in credited { for i in indices { readoutWindows[i] = w } }
+        } : nil
+    }
     /// TUNING TOOL (DetectionTrace.swift): the Detection view seam. The
     /// trace is built on detectQueue at the end of `step` and published
     /// here; the overlay subscribes on main through `onTrace`.
@@ -1676,6 +1735,32 @@ final class Pipeline {
     /// exclusion sites, the panic hold, `enterPause` and `shutdown` reach the
     /// view through it.
     weak var detectionView: DetectionViewController?
+    /// The Developer tab's Tiles preview (ZoomTilesView.swift), attached the
+    /// same way: weak, the UI owns it; the pause, panic and shutdown sites
+    /// turn it off beside the Detection view.
+    weak var tilesPreview: UIDevTiles?
+    /// The Tiles row's data (`ZoomTilesMonitor`): written on every tile pass
+    /// and, while the preview is confirmed, the thumbnails. Like
+    /// `tuningReadout`: nil in headless runs.
+    var zoomTilesMonitor: ZoomTilesMonitor?
+    /// Capture has ONE exclusion listener slot; the Detection view and the
+    /// Tiles preview each run the handshake, so both hear every answer.
+    var detectionViewExclusionHandler: ((CaptureStream.ExclusionResult) -> Void)? {
+        didSet { installExclusionHandlers() }
+    }
+    var tilesPreviewExclusionHandler: ((CaptureStream.ExclusionResult) -> Void)? {
+        didSet { installExclusionHandlers() }
+    }
+    private func installExclusionHandlers() {
+        let view = detectionViewExclusionHandler, tiles = tilesPreviewExclusionHandler
+        capture?.onExclusionResult = view == nil && tiles == nil ? nil : { r in
+            view?(r)
+            tiles?(r)
+        }
+    }
+    /// detectQueue only (`TilePreview`).
+    private var tilePreviewThrottle = TilePreview.Throttle()
+    private lazy var tilePreviewContext = CIContext(options: [.cacheIntermediates: false])
     /// Main thread. Every window capture must not see: the cover window and,
     /// while the Detection view is on, its window. All
     /// three `refreshExclusion` call sites pass this, so a turned-off view's
@@ -1684,11 +1769,13 @@ final class Pipeline {
     /// `overlays.windowNumbers`.
     var exclusionWindowNumbers: [Int] {
         return Self.exclusionWindowNumbers(
-            covers: overlays.windowNumbers, detectionView: detectionView?.excludedWindowNumber)
+            covers: overlays.windowNumbers, detectionView: detectionView?.excludedWindowNumber,
+            tilesPreview: tilesPreview?.excludedWindowNumber)
     }
-    /// Pure, so the Detection view's self-test checks the same rule.
-    static func exclusionWindowNumbers(covers: [Int], detectionView: Int?) -> [Int] {
-        covers + (detectionView.map { [$0] } ?? [])
+    /// Pure, so the Detection view's and the Tiles preview's self-tests
+    /// check the same rule.
+    static func exclusionWindowNumbers(covers: [Int], detectionView: Int?, tilesPreview: Int? = nil) -> [Int] {
+        covers + (detectionView.map { [$0] } ?? []) + (tilesPreview.map { [$0] } ?? [])
     }
     /// Main thread. A pause (panic, parent, SIGUSR2) turns the
     /// Detection view off and refuses turning it on.
@@ -1954,7 +2041,7 @@ final class Pipeline {
                     kind: .regionBirth, detection: cropBlockedThisFrame[sourceIndex],
                     regionID: region.id, windowID: nil))
             }
-            curtain?.onDrop = { [weak self] _, id, window, sourceIndices in
+            cropCurtainDrop = { [weak self] id, window, sourceIndices in
                 guard let self else { return }
                 var indices = sourceIndices
                 if indices.isEmpty {
@@ -1973,6 +2060,7 @@ final class Pipeline {
                         regionID: nil, windowID: id))
                 }
             }
+            installCurtainDropObservers()
             curtain?.onCropEvent = { [logger] info in logger.event("cropDump", info) }
         }
         // A pin limit that actually clipped an update reports itself the same
@@ -2434,6 +2522,12 @@ final class Pipeline {
                 zoomRecord = FrameLogger.ZoomRecord(
                     tile: zoomTile.index, ms: (passMs * 10).rounded() / 10, cut: merged.dropped,
                     full: pass.kept.map(FrameLogger.DetectionRecord.init))
+                // The Developer tab's Tiles row, from this merge's own cut
+                // and same-box decisions; built only while the row is open.
+                if let monitor = zoomTilesMonitor, monitor.isRecording {
+                    monitor.record(ZoomTiles.passView(
+                        merged, index: zoomTile.index, region: zoomTile.region, at: CFAbsoluteTimeGetCurrent()))
+                }
                 pass.kept = merged.merged
                 logger.count("zoomTilePasses")
                 logger.sample("zoomPassMs", passMs)
@@ -2518,9 +2612,29 @@ final class Pipeline {
             logger.count("tuningThresholdStepUnmeasured", filtered.stepUnmeasured)
         }
         if filtered.stepEmptiedFrame { logger.count("tuningThresholdStepFramesEmptied", 1) }
-        tuningReadout?.record(
-            raw: detections, filtered: filtered, tuning: tuning, mode: effectivePolicy,
-            blockFaces: opts.blockFaces, screen: screenSize, now: CFAbsoluteTimeGetCurrent())
+        // The Developer tab's readout is recorded after `curtainRects` below,
+        // so its rows carry this frame's credited windows and drops.
+        readoutWindows.removeAll(keepingCapacity: true)
+        readoutDrops.removeAll(keepingCapacity: true)
+        // Tiles preview (ZoomTilesView.swift): only while capture has
+        // confirmed the popover's exclusion (`previewBlur`), throttled; with
+        // Blur, every policy-passing box of this frame filled black, and
+        // without it the tile as captured. Memory only.
+        if let zoomTile, let monitor = zoomTilesMonitor, let blur = monitor.previewBlur {
+            if tilePreviewThrottle.admit(CFAbsoluteTimeGetCurrent(), tile: zoomTile.index) {
+                let start = CFAbsoluteTimeGetCurrent()
+                if let image = TilePreview.render(
+                    pixelBuffer, region: zoomTile.region, blackout: filtered.blocked.map(\.box), blur: blur,
+                    context: tilePreviewContext)
+                {
+                    monitor.store(image, tile: zoomTile.index, blurred: blur)
+                }
+                logger.sample("tilePreviewMs", (CFAbsoluteTimeGetCurrent() - start) * 1000)
+            } else {
+                // The throttle's refusals ride the 60 s summary, never silent.
+                logger.count("tilePreviewThrottled")
+            }
+        }
         var blocked = filtered.blocked
         if let roi = opts.roi {
             blocked = blocked.filter { roi.contains(CGPoint(x: $0.box.midX, y: $0.box.midY)) }
@@ -2601,9 +2715,20 @@ final class Pipeline {
         // headless, so `anchors` is empty and every downstream path no-ops.
         let anchors = resolveOwnership(
             regions, painted: painted, mustCover: mustCover, at: capturedAt)
+        // Once per step, before the curtain: the readout records (and the
+        // curtain credits windows for it) only in its recording window.
+        readoutActive = tuningReadout?.isActive(now: CFAbsoluteTimeGetCurrent()) ?? false
         let curtainStart = CFAbsoluteTimeGetCurrent()
         let curtains = curtainRects(blocked, at: capturedAt)
         let curtainMs = (CFAbsoluteTimeGetCurrent() - curtainStart) * 1000
+        if let tuningReadout, readoutActive {
+            tuningReadout.record(
+                raw: detections, filtered: filtered, tuning: tuning, mode: effectivePolicy,
+                blockFaces: opts.blockFaces, screen: screenSize, now: CFAbsoluteTimeGetCurrent(),
+                tracked: tracked, roi: opts.roi, blockedCount: blocked.count,
+                windows: readoutWindows, drops: readoutDrops,
+                appName: { [readoutAppNames] in readoutAppNames.name($0) }, frameAt: capturedAt)
+        }
         lastCurtainPainted = curtains.map(\.rect)
         noteWithheld(detections, covered: painted + lastCurtainPainted, at: capturedAt)
         // Region -> curtain ownership, decided HERE because sync-time rects
@@ -2710,6 +2835,7 @@ final class Pipeline {
             let traceStart = CFAbsoluteTimeGetCurrent()
             var walkCostMs = 0.0
             var input = traceInputs(capturedAt: capturedAt, inferStart: inferStart, detectEnd: detectEnd)
+            input.zoomTile = zoomTile?.region
             input.raw = detections
             input.weak = weak
             input.tracked = tracked
@@ -2753,7 +2879,7 @@ final class Pipeline {
         let frames = curtain.update(
             blockedScreenRects: blockedRects,
             tracker: windowTracker, display: display, at: t,
-            sourceIndices: cropWriter == nil ? nil : Array(blocked.indices))
+            sourceIndices: cropWriter == nil && !readoutActive ? nil : Array(blocked.indices))
         noteExposure(blocked, rects: blockedRects, covered: frames.map(\.frame), at: t)
         // Capture-time attribution fallbacks (receipt at
         // Curtain.frontCandidateSecs): named in the 60 s summary like
@@ -3569,8 +3695,9 @@ final class Pipeline {
         // Every pause (granted panic, parent pause, SIGUSR2) turns the
         // Detection view off first. `panicUntil` is set before a panic-class
         // pause reaches here, so it names which.
-        detectionView?.turnOff(
-            reason: (panicUntil ?? .distantPast) > Date() ? .panicPause : .parentPause)
+        let panicPause = (panicUntil ?? .distantPast) > Date()
+        detectionView?.turnOff(reason: panicPause ? .panicPause : .parentPause)
+        tilesPreview?.turnOffPreview(reason: panicPause ? .panicPause : .parentPause)
         pauseResumeAcknowledger.cancelPendingResume()
         if !appliedPause { lastPauseMarker = Date() }  // a repeat panic keeps the cadence
         appliedPause = true
@@ -3822,6 +3949,7 @@ final class Pipeline {
             // Before the administrator prompt: the panic path must never
             // leave a detections-only view (covers hidden) up behind it.
             self?.detectionView?.turnOff(reason: .panicHotkey)
+            self?.tilesPreview?.turnOffPreview(reason: .panicHotkey)
             self?.panicGate.press()
         })
 
@@ -3864,6 +3992,7 @@ final class Pipeline {
         // pipeline stopping under a running panic pause.
         if panic != nil { logger.event("panic-end", "reason=pipeline-stopped") }
         detectionView?.turnOff(reason: .shutdown)
+        tilesPreview?.turnOffPreview(reason: .shutdown)
         // A drained resume operation can still have its main acknowledgement
         // queued. Invalidate it before shutdown drains the detector queue, so
         // it cannot clear suppression or report resume after capture stops.
@@ -3894,7 +4023,7 @@ final class Pipeline {
             // `clearAll()` above took every curtain down; the exit summary
             // must not report one as still painted.
             self.logger.setActiveCovers(0)
-            self.logger.printSummary(elapsed: CFAbsoluteTimeGetCurrent() - startedAt)
+            self.logger.printFinalSummary()
         }
         if let tracker = windowTracker {
             let (polls, meanMs) = tracker.pollStats
@@ -4374,6 +4503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A rebuilt pipeline starts with the Detection view off: the old
         // pipeline's window, trace and exclusion go with it.
         uiActions?.detectionView.detach(reason: .pipelineRebuild)
+        devTuning?.tiles.detach(reason: .pipelineRebuild)
         do {
             var pipelineOpts = opts
             // dev-overrides.json `log.mode` beats config.json's
@@ -4420,11 +4550,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipeline?.tuningReadout = devTuning?.readout
         // The Detection view attaches off; the UI turns it on (PIN).
         if let pipeline { uiActions?.detectionView.attach(pipeline) }
+        // The Tiles row (ZoomTilesView.swift): its data rides this pipeline;
+        // its preview attaches off, the UI turns it on (PIN).
+        pipeline?.zoomTilesMonitor = devTuning?.tiles.monitor
+        if let pipeline { devTuning?.tiles.attach(pipeline) }
         pipeline?.capture.onStreamGenerationInvalidated = { [weak self] in
             self?.pipeline?.requireNewCaptureFrameReceipt()
             // A rebuilt stream carries a fresh content filter: the view hides
             // until the re-arm's exclusion refresh names its window again.
             self?.uiActions?.detectionView.streamInvalidated()
+            self?.devTuning?.tiles.streamInvalidated()
             if let runtime = self?.onboardingRuntime {
                 MainActor.assumeIsolated {
                     runtime.captureGenerationInvalidated()
@@ -4677,6 +4812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             base: opts.tuning, baseSource: opts.tuningSource)
         devTuning = tuning
         uiActions?.devTuning = tuning
+        tuning.tiles.log = log
         // Diagnostic reports (Diagnostics.swift, docs/diagnostics.md): built
         // and sent only when the owner reviews one in Settings and presses Send.
         // The per-uid log dir is where agent-launch.sh sends stderr; the
@@ -4834,7 +4970,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         syncStatusItem()
-        armRevealHotkey()
         store.onChange = { [weak self] settings in
             self?.uiState?.settings = settings
             self?.uiState?.hasParentPIN = store.parentPIN != nil
@@ -4848,7 +4983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 self?.onboardingRuntime?.settingsDidChange()
             }
-            // showMenuBarIcon may have been written by the other admin
+            // Onboarding completion may have been written by the other admin
             // session; the icon follows within one poll tick.
             self?.syncStatusItem()
         }
@@ -4867,6 +5002,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.republishIfPauseChanged()
             self.pollTuningFile(stateRoot: store.root, log: log)
             self.devTuning?.tick()
+            // Menu-bar green check (UIState.setupHealthy): published only on
+            // a change, so the 1 Hz tick does not repaint the status item.
+            let healthy = MainActor.assumeIsolated { () -> Bool in
+                self.onboardingRuntime?.recheckServicesIfDue()
+                return self.onboardingRuntime?.setupHealthy ?? false
+            }
+            if state.setupHealthy != healthy { state.setupHealthy = healthy }
             // Detection view TTL and countdown (1 Hz is the countdown's own
             // resolution; the TTL can land up to one tick late).
             self.uiActions?.detectionView.tick()
@@ -4878,7 +5020,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 state.isAdmin = true
                 log("ui", "session uid=\(getuid()) user=\(user) admin=true (on re-check)")
                 self.syncStatusItem()
-                self.armRevealHotkey()
             }
         }
         store.startPolling()
@@ -4895,11 +5036,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// directory and settings.json are unwritable there by the tamper model,
     /// so no control that could reach store.mutate or the PIN gate is drawn.
     /// The green toast keeps its own admin gate (statusToastIsShown, ASSUMED).
-    static func statusItemWanted(
-        isAdmin: Bool, showMenuBarIcon: Bool, onboardingComplete: Bool
-    ) -> Bool {
+    /// The icon CANNOT be hidden since 2026-10-20 (owner): the "Show menu bar
+    /// icon" setting, and with it the ⌘⌥⌃S reveal hotkey that brought a
+    /// hidden icon back, are gone. A `showMenuBarIcon: false` left in an
+    /// older settings.json still loads (`UISettingsStore`) and is ignored
+    /// here on purpose.
+    static func statusItemWanted(isAdmin: Bool, onboardingComplete: Bool) -> Bool {
         _ = isAdmin
-        return showMenuBarIcon && onboardingComplete
+        return onboardingComplete
     }
 
     private func syncStatusItem() {
@@ -4917,9 +5061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || state.settings.onboarding.completedAt != nil
             || state.settings.readOnly
         let want = Self.statusItemWanted(
-            isAdmin: state.isAdmin,
-            showMenuBarIcon: state.settings.showMenuBarIcon,
-            onboardingComplete: onboardingComplete)
+            isAdmin: state.isAdmin, onboardingComplete: onboardingComplete)
         if want, statusItem == nil {
             statusItem = UIStatusItem(state: state, actions: actions, activity: activity)
             // §9.1: the reason an icon is or is not there must be answerable
@@ -4929,91 +5071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.remove()
             statusItem = nil
             uiLog?("ui", "status item removed (admin=\(state.isAdmin) "
-                + "showMenuBarIcon=\(state.settings.showMenuBarIcon) "
                 + "onboardingComplete=\(onboardingComplete))")
-        }
-    }
-
-    /// True once registration has been ATTEMPTED. HotkeyCenter has no
-    /// unregister, so the Addendum-5 admin re-check must not register a second
-    /// handler every tick. Deliberately not named `armed`: whether the hotkey
-    /// actually exists is `UIState.revealHotkeyArmed`, and conflating the two
-    /// is how the confirmation came to promise a key nothing had registered.
-    private var revealHotkeyAttempted = false
-
-    /// Retry delay for the popover open the reveal hotkey performs. DERIVED
-    /// from UIStatusItem.open's receipt: a status item created on this
-    /// run-loop turn has a zero-height menu-bar window and NSPopover.show
-    /// silently does nothing, which is exactly the case the hotkey creates
-    /// (icon hidden ⇒ item constructed right here). 0.2 s is ~12 display
-    /// refreshes at 60 Hz, far past the one turn the layout needs, and is
-    /// paid only on this path.
-    static let revealRetrySecs: TimeInterval = 0.2
-
-    /// ⌘⌥⌃S (spec §9.4, Addendum 6B): the documented way back from a hidden
-    /// icon. ADMIN sessions only — a child's session must not be able to
-    /// summon the parent controls — and never fatal: unlike the panic and
-    /// inject hotkeys, a collision here must not take protection down to
-    /// restore a menu-bar icon, so the failure is logged with the recovery
-    /// command instead of calling die().
-    private func armRevealHotkey() {
-        guard !revealHotkeyAttempted, uiState?.isAdmin == true else { return }
-        revealHotkeyAttempted = true
-        let result = HotkeyCenter.shared.register(keyCode: HotkeyCenter.revealKey.code) {
-            [weak self] in self?.revealStatusItem()
-        }
-        // §9.4's whole point: the settings row reads this and refuses to hide
-        // an icon it could not bring back, instead of the failure being
-        // visible only to whoever later reads run.jsonl.
-        uiState?.revealHotkeyArmed = result.isBound
-        guard case .failed(let status) = result else {
-            uiLog?("ui", "reveal hotkey \(HotkeyCenter.revealKey.label) registered")
-            return
-        }
-        uiLog?("ui", "reveal hotkey \(HotkeyCenter.revealKey.label) REGISTRATION FAILED "
-            + "(RegisterEventHotKey status \(HotkeyRegistration.describe(status))) — a hidden icon "
-            + "can still be restored with: sudo "
-            + "\"/Library/Application Support/SentryScreen/json-tool.sh\" set "
-            + "\"\(UISettingsStore.productionRoot)/\(UISettingsStore.fileName)\" "
-            + "showMenuBarIcon true")
-    }
-
-    /// Sets `showMenuBarIcon = true` and opens the popover (spec §9.4). Not
-    /// PIN-gated: it only makes a control visible again, and the mutations
-    /// behind it stay gated.
-    private func revealStatusItem(
-        source: String = "reveal hotkey \(HotkeyCenter.revealKey.label)"
-    ) {
-        guard let state = uiState, let store = settingsStore else { return }
-        if !state.settings.showMenuBarIcon {
-            do {
-                // mutate() notifies in-process observers synchronously, so
-                // syncStatusItem below already sees the new value.
-                try store.mutate { $0.showMenuBarIcon = true }
-            } catch {
-                uiLog?("ui", "reveal hotkey: could not write showMenuBarIcon at "
-                    + "\(store.path): \(error)")
-                return
-            }
-        }
-        syncStatusItem()
-        uiLog?("ui", "\(source) requested parent Settings for "
-            + "\(AdminCheck.currentUserLabel()) — icon shown")
-        openStatusPopover(retries: 1)
-    }
-
-    private func openStatusPopover(retries: Int) {
-        guard let item = statusItem else {
-            uiLog?("ui", "reveal hotkey: no status item to open")
-            return
-        }
-        guard let why = item.open() else { return }
-        guard retries > 0 else {
-            uiLog?("ui", "reveal hotkey: popover did not open (\(why))")
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revealRetrySecs) { [weak self] in
-            self?.openStatusPopover(retries: retries - 1)
         }
     }
 
@@ -5035,15 +5093,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// - `bannerMode` / `underUIDriver`: the original OWNER 2026-08-26 gates —
     ///   the toast belongs to `--capture-loss banner`, and the UI driver's
     ///   screenshots must stay byte-stable.
-    /// - `isAdmin` / `showMenuBarIcon`: ADDED 2026-08-28 (review). The
-    ///   previous comment claimed the toast fired "only if the icon is shown"
-    ///   while the code gated on `--capture-loss banner` alone, so the claim
-    ///   was false in two configurations. ASSUMED, pending owner confirmation
-    ///   (the owner tested the toast in an admin session with the icon on, and
-    ///   never in either of these): an owner who turned the menu-bar icon OFF
-    ///   asked for an invisible install. A Standard session already has its
-    ///   durable shield, so a transient green good-news panel adds interruption
-    ///   without adding state. Suppress both cases.
+    /// - `isAdmin`: ADDED 2026-08-28 (review). ASSUMED, pending owner
+    ///   confirmation (the owner tested the toast in an admin session only):
+    ///   a Standard session already has its durable shield, so a transient
+    ///   green good-news panel adds interruption without adding state.
+    ///   The 2026-08-28 `showMenuBarIcon` gate went with the setting
+    ///   (2026-10-20): the icon can no longer be hidden, and a stored
+    ///   `false` from an older settings.json must not keep suppressing it.
     /// `successConfirmationPending` prevents the short green toast from
     /// competing with the one-time completion window. Also: `isAdmin` is
     /// resolved in `startSettings()` (called before `startPipeline()`), so it
@@ -5054,18 +5110,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// NOT suppress the `state.captureHealth = next` assignment. A false
     /// reading falls past the early return to the normal assignment below;
     /// moving that assignment inside the branch would leave a Standard
-    /// session (or an icon-off install) never reaching `.protecting` at all.
+    /// session never reaching `.protecting` at all.
     /// Neither this selftest nor the gate would see that — they check the
     /// predicate and the pixels, not the state machine's exit path.
     static func statusToastIsShown(
         bannerMode: Bool,
         underUIDriver: Bool,
         isAdmin: Bool,
-        showMenuBarIcon: Bool,
         successConfirmationPending: Bool
     ) -> Bool {
-        bannerMode && !underUIDriver && isAdmin && showMenuBarIcon
-            && !successConfirmationPending
+        bannerMode && !underUIDriver && isAdmin && !successConfirmationPending
     }
 
     /// Pure surface-arbitration policy. Standard sessions and development
@@ -5313,7 +5367,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bannerMode: opts.captureLossBanner,
                 underUIDriver: UIDriver.scriptPath != nil,
                 isAdmin: state.isAdmin,
-                showMenuBarIcon: state.settings.showMenuBarIcon,
                 successConfirmationPending: MainActor.assumeIsolated {
                     onboardingRuntime?.successConfirmationPending == true
                 })

@@ -150,8 +150,7 @@ enum UISymbol {
     /// the two confirmations carry the shape of what they do.
     static let managed = "checkmark"
     static let turnOff = "shield.slash.fill"
-    static let hideIcon = "eye.slash.fill"
-    /// "Remove SentryScreen…" (SPEC §8.1(7)): the row and its confirmation.
+    /// "Uninstall…" (SPEC §8.1(7)): the row and its confirmation.
     static let remove = "trash.fill"
     /// Pause chooser button, the paused tile, Resume, the plans layer's Back,
     /// the protected check, and the keypad's Delete (boards Popover-*).
@@ -162,7 +161,7 @@ enum UISymbol {
     static let deleteDigit = "delete.left"
 
     static let all = [lock, lockedOut, setPin, warning, error, writeError, devState,
-        commandLine, disclosure, managed, turnOff, hideIcon, remove, pause, resume, back, check, deleteDigit]
+        commandLine, disclosure, managed, turnOff, remove, pause, resume, back, check, deleteDigit]
 }
 
 /// Animations (spec §9.3).
@@ -226,6 +225,10 @@ struct UIListRow: View {
     let label: String
     var chevron = true
     var isDisabled = false
+    /// A small leading SF Symbol (Settings' Parent card).
+    var symbol: String? = nil
+    /// Label and symbol ink in place of `ink` (Uninstall… is accent).
+    var tint: Color? = nil
     let action: () -> Void
     @State private var hovering = false
     @Environment(\.uiTextScale) private var textScale
@@ -233,12 +236,19 @@ struct UIListRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .uiFont(.callout)
+                        .frame(width: 18)
+                        .foregroundStyle(isDisabled ? SentryColor.muted : tint ?? SentryColor.ink2)
+                        .accessibilityHidden(true)
+                }
                 Text(label)
                     .uiFont(.callout)
                     // A row label wraps rather than truncating once the text
                     // is larger than the 320 pt popover's one line.
                     .fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(isDisabled ? SentryColor.muted : SentryColor.ink)
+                    .foregroundStyle(isDisabled ? SentryColor.muted : tint ?? SentryColor.ink)
                 Spacer(minLength: 0)
                 if chevron {
                     Image(systemName: UISymbol.disclosure)
@@ -636,15 +646,25 @@ struct UIPopoverView: View {
             // around it, not rows that can scroll away.
             case .settings:
                 UISettingsPanelView(state: state, actions: actions, activity: activity)
-            case .confirm(let spec): UIConfirmView(actions: actions, spec: spec)
             case .remove: UIRemoveView(actions: actions)
             case .diagnosticsReview: UIDiagnosticsReviewView(actions: actions)
             }
             // The root draws the wordmark inside its Settings… row (footer);
-            // every other layer keeps it bottom-right on its own.
+            // every other layer keeps it bottom-right on its own. Settings
+            // puts the build at its left (mockup A, 2026-10-20: Version was
+            // a row of its own under the "More settings" fold).
             if case .none = actions.layer {} else {
-                HStack { Spacer(minLength: 0); UIPopoverWordmark() }
-                    .padding(.top, 2)
+                HStack(alignment: .firstTextBaseline) {
+                    if case .settings = actions.layer {
+                        Text(Self.versionLine)
+                            .uiFont(.caption2)
+                            .foregroundStyle(SentryColor.muted)
+                            .uiControl("ui.settings.version", kind: .text, read: { UIVersion.display })
+                    }
+                    Spacer(minLength: 0)
+                    UIPopoverWordmark()
+                }
+                .padding(.top, 2)
             }
         }
         .padding(UIMetrics.popoverPadding)
@@ -705,14 +725,19 @@ struct UIPopoverView: View {
         } else {
             healthy
         }
-        if Self.parentControlsAvailable(isAdmin: state.isAdmin) { uninstallLink }
+        // The healthy branch carries it in its footer, beside Settings….
+        if Self.parentControlsAvailable(isAdmin: state.isAdmin), !showsFooter { uninstallLink }
     }
 
-    /// "Uninstall SentryScreen…" in every parent state (owner 2026-10-16), so
-    /// a parent stuck in a bug can always remove the app. Its own last row:
-    /// the 288 pt footer row has no room beside Settings… and the wordmark.
+    /// The healthy branch, the one with the Settings… footer.
+    private var showsFooter: Bool { !state.isDegraded && sheet != .pause }
+
+    /// "Uninstall…" in every parent state (owner 2026-10-16), so a parent
+    /// stuck in a bug can always remove the app. Beside Settings… in the
+    /// footer (owner 2026-10-20: the one word fits there; "Remove
+    /// SentryScreen…" did not), its own last row where there is no footer.
     private var uninstallLink: some View {
-        UIFooterButton(label: UninstallCopy.anywhereLabel, muted: true) { actions.beginUninstall() }
+        UIFooterButton(label: UninstallCopy.anywhereLabel) { actions.beginUninstall() }
             .uiControl("ui.uninstall", kind: .button,
                 read: { UninstallCopy.anywhereLabel },
                 activate: { actions.beginUninstall() })
@@ -755,6 +780,7 @@ struct UIPopoverView: View {
                     .uiControl("ui.settings.open", kind: .button,
                         read: { UIPopoverView.settingsLabel },
                         activate: { actions.openSettings() })
+                uninstallLink.padding(.horizontal, 4)
                 Spacer(minLength: 8)
                 UIPopoverWordmark().padding(.trailing, 4)
             }
@@ -767,6 +793,8 @@ struct UIPopoverView: View {
     }
 
     static let settingsLabel = "Settings…"
+    /// "Version 0.4.2 (build 29)", small and muted in Settings' bottom row.
+    static var versionLine: String { "Version " + UIVersion.display }
 
     // MARK: Header
 
@@ -1231,11 +1259,11 @@ struct UIActivitySettingsSection: View {
                             .uiControl("ui.activity.empty", kind: .text,
                                 read: { UIPopoverView.activityEmptyText })
                     }
-                    ForEach(Array(activity.items.enumerated()), id: \.offset) { i, item in
-                        if i > 0 || !activity.errors.isEmpty {
+                    if !activity.items.isEmpty {
+                        if !activity.errors.isEmpty {
                             Divider().padding(.leading, UIMetrics.sectionPadding)
                         }
-                        activityRow(item, index: i)
+                        itemList
                     }
                     if activity.truncated {
                         Divider().padding(.leading, UIMetrics.sectionPadding)
@@ -1266,6 +1294,39 @@ struct UIActivitySettingsSection: View {
                     read: { UIPopoverView.activityFooterText })
         }
     }
+
+    /// Owner 2026-10-20: the list shows `UIActivity.visibleRows` (3) rows and
+    /// scrolls to the rest; `UIActivity.rows` (10) is unchanged. Only the
+    /// item rows scroll — the error, empty and truncation rows and the
+    /// footer stay outside. The viewport is the visible rows' own minimum
+    /// height, so it scales with the text size; the rows' dividers are
+    /// overlays, so they add no height the viewport would have to guess.
+    /// Every row stays in the registry (a plain VStack, not lazy), and
+    /// `scrollto ui.activity.row.N` reaches the hidden ones
+    /// (`UIScrollAnchors.register(_:in:container:)`).
+    private var itemList: some View {
+        let shown = min(activity.items.count, UIActivity.visibleRows)
+        return ScrollView(.vertical) {
+            ScrollViewReader { proxy in
+                VStack(spacing: 0) {
+                    ForEach(Array(activity.items.enumerated()), id: \.offset) { i, item in
+                        activityRow(item, index: i)
+                            .overlay(alignment: .top) {
+                                if i > 0 { Divider().padding(.leading, UIMetrics.sectionPadding) }
+                            }
+                            .uiScrollAnchor("ui.activity.row.\(i)", in: proxy, container: Self.listID)
+                    }
+                }
+            }
+        }
+        .scrollIndicators(activity.items.count > UIActivity.visibleRows ? .visible : .hidden)
+        .frame(height: CGFloat(shown) * UIMetrics.activityRowHeight(scale: textScale))
+        .uiScrollAnchor(Self.listID)
+        .uiControl(Self.listID, kind: .text,
+            read: { [activity] in "\(min(activity.items.count, UIActivity.visibleRows)) of \(activity.items.count) rows visible" })
+    }
+
+    static let listID = "ui.activity.list"
 
     private func activityRow(_ item: ActivityItem, index: Int) -> some View {
         HStack(spacing: 8) {
@@ -1370,7 +1431,9 @@ struct UIPopoverHeader: View {
     }
 
     private var fullBody: some View {
-        HStack(alignment: .center, spacing: 12) {
+        // Top, not centre: a three-line "Protection is interrupted" title
+        // left the badge floating mid-block (VM render 2026-10-20).
+        HStack(alignment: .top, spacing: 12) {
             badge
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {

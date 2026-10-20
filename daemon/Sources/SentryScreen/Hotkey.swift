@@ -33,10 +33,6 @@ final class HotkeyCenter {
     /// SIGUSR1 (main.swift), which needs no registration at all — and which
     /// the SAME flag arms since 2026-09-07 (DevSignals.swift).
     static let injectKey = (code: UInt32(kVK_ANSI_I), label: "Cmd+Opt+Ctrl+I")
-    /// Brings a hidden menu bar icon back (ui-mvp-spec §9.4, Addendum 6B).
-    /// Registered in ADMIN sessions only, and never fatal: a registration
-    /// failure must not take protection down to restore an icon.
-    static let revealKey = (code: UInt32(kVK_ANSI_S), label: "Cmd+Opt+Ctrl+S")
     static let modifiers = UInt32(cmdKey | optionKey | controlKey)
 
     private var table = HotkeyTable()

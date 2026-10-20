@@ -55,7 +55,7 @@ enum UIPin {
     /// The sentence names the categories rather than listing every row.
     /// REMOVING SentryScreen is deliberately absent — it asks for an
     /// administrator name and password, not the PIN (`UIUninstall.swift`,
-    /// and `UISettingsPanelView.removeCaption` says so where it is offered).
+    /// and its confirmation says so before anything runs).
     static let purpose = "You will need it to pause protection and change settings on this Mac."
     /// Appended wherever the entry field is on screen with the promise.
     static var purposeWithFormat: String {

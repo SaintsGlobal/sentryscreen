@@ -92,7 +92,7 @@ cover. [docs/spec.md](docs/spec.md) has the full pipeline (capture → detect �
   <tr>
     <td align="center"><img src="docs/assets/setup-done.png" width="260" alt="Setup complete: Protection is on. You're all set."><br><sub>Protection is on</sub></td>
     <td align="center"><img src="docs/assets/menu-popover.png" width="260" alt="Menu bar popover: Protected, on for everyone on this Mac, with a Pause protection button."><br><sub>Menu bar status</sub></td>
-    <td align="center"><img src="docs/assets/menu-settings.png" width="200" alt="Settings panel: sensitivity Standard or Strict, recent activity, more settings."><br><sub>Parent settings</sub></td>
+    <td align="center"><img src="docs/assets/menu-settings.png" width="200" alt="Settings panel: sensitivity Standard or Strict, recent activity, and the parent rows: PIN, diagnostic report, uninstall."><br><sub>Parent settings</sub></td>
   </tr>
 </table>
 
@@ -190,9 +190,10 @@ install preflight refuses otherwise; leave it out for a Developer ID build.
 
 ## Uninstall
 
-In an administrator account, open the menu bar item › **Uninstall
-SentryScreen…** (the last line of the popover in every state, and at the bottom
-of the Setup window), or Settings › **Remove SentryScreen…**. The parent PIN is
+In an administrator account, open the menu bar item › **Uninstall…** (beside
+Settings… at the bottom of the popover, on its own last line when protection is
+interrupted, and at the bottom of the Setup window), or Settings › Parent ›
+**Uninstall…**. The parent PIN is
 asked first when one is set; the Uninstaller then asks for an administrator
 password. Or, in Terminal:
 
@@ -217,16 +218,31 @@ and detection stay on, and each lift is written to the parent alert log.
 Every build includes the tuning tools:
 
 - **Settings › Developer:** per-class thresholds, size floors (`thresholdSteps`),
-  curtain hit counts and hold times, with a live "Last 60 s" readout of hits and
-  of which rule removed a box. Changes are written to `parent/tuning.json` behind
-  the parent PIN and apply within a second.
+  curtain hit counts and hold times, with a live "Last 60 s" list of the strongest
+  recent detections: one row per detection, showing its score against the class
+  floor, and whether it dropped a window cover, was covered, or which rule removed
+  it. Changes are written to `parent/tuning.json` behind the parent PIN and apply
+  within a second. **Reset** returns to the floors below.
 - **Detection view:** outlines of what the model sees, over or instead of the
   covers, for a few minutes at a time, including weak detections below the
-  blocking threshold.
+  blocking threshold. Every box carries its label by default.
+- **Tiles:** which quarter of the screen the zoom pass checked last and what it
+  found there, with one tile shown zoomed in. **Show preview** adds thumbnails of
+  the tiles, in memory only and off when the popover closes. They start blurred,
+  with every blocked box filled black; turning **Blur** off shows the tiles sharp
+  and unfilled, as the detector saw them, to check the zoom lands where it should.
+  The tiles are recorded only while this row is open.
 - The same policy can be set in `config.json` under `"tuning"`; an unknown key or
   out-of-range value is refused by name. `sentry-screen --print-tuning` prints the
   policy in force. The fields and their meaning are documented on
   `TuningPolicy` in `daemon/Sources/SentryScreen/TuningPolicy.swift`.
+
+Shipped defaults: female breast exposed 0.90, female genitalia exposed 0.70, male
+genitalia exposed 0.90, buttocks exposed 0.80, anus exposed 0.70 (on the model's
+0–1 score); covered classes 0.60 under the strict policy; an exposed box mostly
+inside a covered box of the same part counts as covered (`coveredBeatsExposed`,
+overlap 0.90); and `zoomTiles` on. The high floors cut false alarms on swimwear at
+the cost of missing small or partial content, which the model scores lower.
 
 <details>
 <summary>Running from Terminal (development)</summary>

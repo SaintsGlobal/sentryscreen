@@ -281,6 +281,11 @@ enum LogTail {
 final class UIActivity: ObservableObject {
     /// Rows shown. OWNER (spec §9.2): fixed by the design.
     static let rows = 10
+    /// Rows visible at once in Settings › Recent activity; the rest of the
+    /// `rows` scroll (`UIActivitySettingsSection.itemList`). OWNER decision
+    /// 2026-10-20 (Settings cleanup): show 3, scroll the rest. Not measured;
+    /// it only shortens the page, so `UIDriver.foldBudget` can only gain.
+    static let visibleRows = 3
     /// Refresh while open. DERIVED (spec §7.3): mirrors
     /// `AppDelegate.captureLossPollSecs`; the timer is invalidated on close.
     static let refreshSecs: TimeInterval = 5

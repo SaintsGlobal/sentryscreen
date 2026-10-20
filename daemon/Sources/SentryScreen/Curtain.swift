@@ -155,6 +155,13 @@ final class Curtain {
     /// call it. The frame is the window rect used by the drop decision, and
     /// source indices refer to this update's `blockedScreenRects`.
     var onDrop: ((String, CGWindowID, CGRect?, [Int]) -> Void)?
+    /// DEV readout observer (2026-10-20, the Developer tab's "Last 60 s"
+    /// rows): at the end of every update that had source indices, the
+    /// windows this update CREDITED, as window → indices into
+    /// `blockedScreenRects`. Empty on a walk-skipped update. Observe only:
+    /// it changes no curtain decision, and it is the curtain's own credit,
+    /// so a row's window is exactly the window the hit counted for.
+    var onAttribution: (([CGWindowID: [Int]]) -> Void)?
     /// DEV crop contract failures use their own named log event.
     var onCropEvent: ((String) -> Void)?
 
@@ -895,13 +902,16 @@ final class Curtain {
         sourceIndices: [Int]? = nil
     ) -> [(id: CGWindowID, frame: CGRect)] {
         var source: [Int]?
-        if onDrop != nil, !blockedScreenRects.isEmpty {
-            if let sourceIndices, sourceIndices.count == blockedScreenRects.count {
+        // nil `sourceIndices` is the caller opting out this frame (no crop
+        // writer, readout not recording); only a list that does not fit is
+        // a skip worth logging.
+        if onDrop != nil || onAttribution != nil, !blockedScreenRects.isEmpty, let sourceIndices {
+            if sourceIndices.count == blockedScreenRects.count {
                 source = sourceIndices
             } else {
                 onCropEvent?(
                     "attribution=source-index skipped=true expected=\(blockedScreenRects.count) "
-                        + "observed=\(sourceIndices?.count ?? 0)")
+                        + "observed=\(sourceIndices.count)")
             }
         }
         var attributedThisFrame: [CGWindowID: [Int]]? = source == nil ? nil : [:]
@@ -1669,6 +1679,7 @@ final class Curtain {
             watchOverBudget = false
             onChange?("watch-budget: back under limit (\(watching) ids)", 0)
         }
+        if let attributedThisFrame { onAttribution?(attributedThisFrame) }
         return out.sorted { $0.id < $1.id }
     }
 

@@ -9,7 +9,10 @@ import SwiftUI
 //     detection of a policy class, every box a tuning rule removed, and every
 //     curtain event; the UI reads a 60 s snapshot on the settings tick. The
 //     UI and the pipeline are one process (main.swift), so nothing tails a
-//     file.
+//     file. Since 2026-10-20 the snapshot leads with one ROW PER TRACK (a
+//     class in one window at one coarse place on screen), ranked by peak
+//     score decayed by age, each row saying what happened to it (curtain,
+//     cover, which rule removed it, or under its floor).
 //   * `UIDevTuning` — the UI side (main thread). Holds the draft policy the
 //     sliders edit, writes the tuning file atomically with the parent/ file
 //     contract (0660, the directory's group), and shows the agent's echo:
@@ -28,6 +31,124 @@ final class TuningReadout {
         let label: String
         let conf: Float
         let sidePt: Double?
+        /// The window the curtain CREDITED this box to on this frame
+        /// (`Curtain.onAttribution`); nil when it was not credited (not
+        /// blocked, a walk-skipped frame, no curtain in this cover mode).
+        var windowID: CGWindowID? = nil
+        /// What the policy did with the box (never `.curtain`: a drop is a
+        /// track's fate, not one box's). nil: a box no row shows.
+        var status: TrackRow.Status? = nil
+        /// Capture time of the box's frame (`at` is when it was recorded,
+        /// which is what the 60 s window is measured in).
+        var frameAt: Double? = nil
+        /// The covered label covered-beats-exposed judged this box as, when
+        /// it relabelled it AND the box still blocked (Strict). nil otherwise.
+        var judgedAs: String? = nil
+    }
+
+    /// ONE ROW PER TRACK (2026-10-20): a policy class in one window at one
+    /// coarse place on screen (`TrackKey`), alive while hits keep arriving,
+    /// gone `windowSecs` after its last hit. Rows hold labels, numbers and
+    /// the app name only — no window title, no pixels.
+    struct TrackRow: Equatable, Identifiable {
+        /// What happened to the track, most consequential first.
+        enum Status: Equatable {
+            /// A curtain drop's evidence included this track's boxes
+            /// (`Curtain.onDrop` source indices). Sticky for the track's life.
+            case curtain
+            /// At least one box blocked (region / media cover, or a curtain hit).
+            case covered
+            /// Never blocked; the LAST rule that removed a box, in the words a
+            /// person edits: "covered-beats-exposed", "minBoxPt",
+            /// "minBoxFraction", "size step", "outside ROI".
+            case removed(String)
+            /// Never blocked, never removed by a rule: under its floor.
+            case below
+
+            var symbol: String {
+                switch self {
+                case .curtain: return "✓"
+                case .covered: return "◼"
+                case .removed: return "⊘"
+                case .below: return "○"
+                }
+            }
+
+            var text: String {
+                switch self {
+                case .curtain: return "curtain dropped"
+                case .covered: return "covered"
+                case let .removed(rule): return "removed by \(rule)"
+                case .below: return "below floor"
+                }
+            }
+
+            /// Merging a box into its track: a later box only raises it.
+            var weight: Int {
+                switch self {
+                case .curtain: return 3
+                case .covered: return 2
+                case .removed: return 1
+                case .below: return 0
+                }
+            }
+        }
+
+        let id: String
+        let label: String
+        let windowID: CGWindowID?
+        let app: String?
+        let peak: Float
+        let latest: Float
+        /// The floor the latest box had to clear (flat threshold or its size
+        /// step): the mark on the score bar.
+        let floor: Float
+        let sidePt: Double?
+        let status: Status
+        let hits: Int
+        let ageSecs: Double
+        /// `peak × 0.5^(age / rankHalfLifeSecs)`, the sort key.
+        let rank: Double
+        /// Set when covered-beats-exposed relabelled the latest box and it
+        /// was covered under the covered class's floor (Strict): `floor` is
+        /// then that class's, which the row says so it does not read as a
+        /// wrong floor for the exposed class (owner 2026-10-20).
+        var judgedAs: String? = nil
+
+        var code: String { TuningReadout.classCode(label) }
+        /// NEAR MISS: the peak sat under its floor by at most `nearMissBand`.
+        var nearMiss: Bool { peak < floor && peak >= floor - TuningReadout.nearMissBand }
+    }
+
+    /// A curtain drop for the readout: the dropped window and the indices,
+    /// into the frame's blocked list, of the boxes that tripped it.
+    struct Drop: Equatable {
+        let windowID: CGWindowID
+        let indices: [Int]
+    }
+
+    /// How a box finds its track. Window nil = not credited this frame; such
+    /// a box joins a track with the same label and cell in any window
+    /// (`mergeTrack`), so the curtain's 1-in-3 walk does not split a subject.
+    struct TrackKey: Hashable {
+        let label: String
+        let windowID: CGWindowID?
+        let cellX: Int
+        let cellY: Int
+        var id: String { "\(label)|\(windowID.map { String($0) } ?? "-")|\(cellX),\(cellY)" }
+    }
+
+    struct Track {
+        var key: TrackKey
+        var app: String?
+        var lastAt: Double
+        var peak: Float
+        var latest: Float
+        var floor: Float
+        var sidePt: Double?
+        var status: TrackRow.Status
+        var hits: Int
+        var judgedAs: String? = nil
     }
 
     /// A box a tuning rule removed or relabelled, with the rule that did it.
@@ -85,6 +206,15 @@ final class TuningReadout {
     }
 
     struct Snapshot: Equatable {
+        /// Every live track, ranked (`rankHalfLifeSecs`), strongest first.
+        var rows: [TrackRow] = []
+        /// Tracks lost to `trackCapacity` since launch or the last `reset`.
+        var tracksEvicted = 0
+        /// Frames whose credited windows / drop indices could not be mapped
+        /// back to boxes, because the policy mirror disagreed with the
+        /// pipeline's blocked count (`record`). Those boxes still count,
+        /// without window or ✓. Shown, never silent.
+        var attributionSkipped = 0
         var classes: [ClassStat] = []
         var lastDrop: CurtainEvent?
         var lastCurtain: CurtainEvent?
@@ -111,7 +241,7 @@ final class TuningReadout {
         var overflow = 0
         /// The same for the frame ring (`frameCapacity`); shown too.
         var framesOverflow = 0
-        var isEmpty: Bool { classes.isEmpty && lastCurtain == nil && lastSuppression == nil }
+        var isEmpty: Bool { rows.isEmpty && classes.isEmpty && lastCurtain == nil && lastSuppression == nil }
     }
 
     /// The readout's window. Requirement (owner brief 2026-09-10): "the last
@@ -145,6 +275,33 @@ final class TuningReadout {
     /// over the worst case. In-window eviction is COUNTED into
     /// `Snapshot.framesOverflow` and printed, like the hit ring's.
     static let frameCapacity = 2048
+    /// RANKING HALF-LIFE: rows sort by `peak × 0.5^(age / this)`, age =
+    /// seconds since the track's last hit. 15 s (owner design 2026-10-20).
+    /// DERIVED from the 60 s window: four half-lives, so a row about to age
+    /// out weighs a sixteenth of its peak, and a fresh 0.75 outranks a 0.95
+    /// from 6 s ago (0.95 × 0.76 = 0.72) — strong fresh hits on top, older
+    /// ones drifting down. ASSUMED as a reading pace: nothing measured how
+    /// fast a person reads the list.
+    static let rankHalfLifeSecs: Double = 15
+    /// NEAR-MISS band under a class floor. 0.05 (owner design 2026-10-20),
+    /// DERIVED from the jitter receipt at `TuningPolicy.keepGap`: the same
+    /// content's score moves p50 0.03 / p75 0.09 on a small shift, so a
+    /// peak within 0.05 under its floor is one an ordinary jitter can carry
+    /// over it — the rows that matter while tuning a floor.
+    static let nearMissBand: Float = 0.05
+    /// Track cell grid per display axis: a box's centre picks one of 4 × 4
+    /// cells, so two subjects in one window are two rows when they sit in
+    /// different quarters of the screen. ASSUMED (2026-10-20): coarse on
+    /// purpose, because a subject that scrolls across a cell boundary starts
+    /// a new row and a finer grid would make that the common case.
+    static let trackGrid = 4
+    /// TRACK-TABLE CAP. DERIVED (2026-10-20): a key is class × window ×
+    /// cell, so one window holds at most 8 policy classes × 16 cells = 128
+    /// tracks however long it scrolls; 512 is four windows saturated at once.
+    /// Full: the LOWEST-RANKED track is evicted, COUNTED into
+    /// `Snapshot.tracksEvicted`, shown on the tab, and logged once per
+    /// episode through `onLimit` with this name, the limit and the count.
+    static let trackCapacity = 512
 
     /// A time-ordered ring for one window: entries older than the window
     /// are pruned before each append, and only entries still inside the
@@ -189,6 +346,40 @@ final class TuningReadout {
     }
 
     private let lock = NSLock()
+
+    /// RECORDING WINDOW: the readout records only while the Developer tab is
+    /// open and for this long after it closes (code review 2026-10-20: it
+    /// re-ran the policy per box and asked the curtain for per-frame window
+    /// credit on every Mac, for a tab almost nobody opens). 600 s, ASSUMED:
+    /// long enough to close Settings, play the content being tuned, and come
+    /// back to read it; ten times the readout's own 60 s window.
+    static let activeTailSecs: Double = 600
+    private var activeUntil = -Double.infinity
+
+    /// Main, from the tab's 1 Hz tick while it is on screen.
+    func keepActive(now: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeUntil = now + Self.activeTailSecs
+    }
+
+    /// detectQueue, per frame: whether to record (and so whether the
+    /// pipeline asks the curtain for window credit at all).
+    func isActive(now: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return now < activeUntil
+    }
+
+    /// `trackCapacity` and attribution-mismatch reports, edge-triggered (one
+    /// line per episode), called outside the lock. The pipeline wires it to
+    /// the run log (`"event":"tuning-readout"`); unwired in tests and the demo.
+    var onLimit: ((String) -> Void)?
+    private var tracks: [TrackKey: Track] = [:]
+    private var tracksEvicted = 0
+    private var trackCapFull = false
+    private var attributionSkipped = 0
+    private var attributionMismatch = false
     private var hits = WindowRing<Hit>(capacity: TuningReadout.capacity, time: { $0.at })
     private var frames = WindowRing<FrameStat>(capacity: TuningReadout.frameCapacity, time: { $0.at })
     private var suppressions: [Suppression] = []
@@ -208,20 +399,59 @@ final class TuningReadout {
     /// frame's `TuningPolicy.filter` result: the FRAME-level numbers come
     /// from it rather than being re-derived, so the tab and the run log's
     /// counters can never disagree.
+    ///
+    /// TRACKS (2026-10-20): every policy-class box also lands in its track.
+    /// Its fate comes from `TuningPolicy.verdicts`, the Detection view's
+    /// per-box mirror of `filter`, given the same `tracked` and `roi`, so a
+    /// row and the trace never tell one box two ways. `windows` (credited
+    /// window per box) and `drops` index the pipeline's BLOCKED list —
+    /// `filter`'s blocked narrowed by the ROI, what `Curtain.update` saw —
+    /// which is the raw boxes whose verdict passes, in raw order. When the
+    /// mirror's count is not `blockedCount`, the frame's boxes still count
+    /// but carry no window or ✓, and the mismatch is counted and logged.
+    /// `appName` (memoized by the caller) runs outside the lock.
     func record(
         raw: [Detection], filtered: TuningPolicy.Filtered, tuning: TuningPolicy,
-        mode: PolicyMode, blockFaces: Bool, screen: CGSize, now: Double
+        mode: PolicyMode, blockFaces: Bool, screen: CGSize, now: Double,
+        tracked: TuningPolicy.CoveredInput = .init(), roi: CGRect? = nil, blockedCount: Int? = nil,
+        windows: [Int: CGWindowID] = [:], drops: [Drop] = [],
+        appName: (CGWindowID) -> String? = { _ in nil }, frameAt: Double? = nil
     ) {
         guard !raw.isEmpty else { return }
         let measurable = screen.width > 0 && screen.height > 0
         var newHits: [Hit] = []
         var newSuppressions: [Suppression] = []
         let (demoted, _) = tuning.demoteCovered(raw)
+        let verdicts = tuning.verdicts(
+            raw, mode: mode, blockFaces: blockFaces, screen: screen, roi: roi, tracked: tracked)
+        // Blocked-list index → raw index: the mirror's passing boxes, in order.
+        let rawOfBlocked = verdicts.indices.filter { verdicts[$0].passes }
+        let expected = blockedCount ?? filtered.blocked.count
+        let mapped = rawOfBlocked.count == expected
+        var windowOfRaw: [Int: CGWindowID] = [:]
+        var droppedRaw: [Int: CGWindowID] = [:]
+        if mapped {
+            for (b, w) in windows where rawOfBlocked.indices.contains(b) { windowOfRaw[rawOfBlocked[b]] = w }
+            for drop in drops {
+                for b in drop.indices where rawOfBlocked.indices.contains(b) { droppedRaw[rawOfBlocked[b]] = drop.windowID }
+            }
+        }
+        var apps: [CGWindowID: String] = [:]
+        for w in Set(windowOfRaw.values).union(droppedRaw.values) { apps[w] = appName(w) }
+        var trackHits: [(box: CGRect, hit: Hit, floor: Float, dropped: Bool)] = []
         for (i, d) in raw.enumerated() {
             guard tuning.rule(for: d.label) != nil, d.label != TuningPolicy.injectLabel else { continue }
             let side: Double? = measurable
                 ? Double(min(d.box.width * screen.width, d.box.height * screen.height)) : nil
-            newHits.append(Hit(at: now, label: d.label, conf: d.confidence, sidePt: side))
+            var hit = Hit(at: now, label: d.label, conf: d.confidence, sidePt: side)
+            hit.windowID = droppedRaw[i] ?? windowOfRaw[i]
+            hit.frameAt = frameAt
+            if let demotion = verdicts[i].demotion, verdicts[i].passes { hit.judgedAs = demotion.to }
+            if let (status, floor) = Self.fate(verdicts[i], raw: d, tuning: tuning, mode: mode, blockFaces: blockFaces) {
+                hit.status = status
+                trackHits.append((d.box, hit, floor, droppedRaw[i] != nil))
+            }
+            newHits.append(hit)
             let after = demoted[i]
             if after.label != d.label {
                 newSuppressions.append(Suppression(
@@ -261,10 +491,30 @@ final class TuningReadout {
         // not kept.
         let blockedFlat = !filtered.blocked.isEmpty || filtered.stepDropped > 0
         let keepFrame = blockedFlat || filtered.minBoxDropped > 0 || filtered.demoted > 0
-        guard !newHits.isEmpty || !newSuppressions.isEmpty || keepFrame else { return }
+        guard !newHits.isEmpty || !newSuppressions.isEmpty || keepFrame || !mapped else { return }
+        var limitLines: [String] = []
         lock.lock()
-        defer { lock.unlock() }
+        defer {
+            lock.unlock()
+            for line in limitLines { onLimit?(line) }
+        }
         let since = now - Self.windowSecs
+        if !mapped {
+            attributionSkipped += 1
+            if !attributionMismatch {
+                attributionMismatch = true
+                limitLines.append(
+                    "attribution skipped: policy mirror passes \(rawOfBlocked.count) boxes, pipeline "
+                        + "blocked \(expected); such frames' boxes are counted without window or curtain mark "
+                        + "(fix: TuningReadout.record / TuningPolicy.verdicts)")
+            }
+        } else {
+            attributionMismatch = false
+        }
+        for t in trackHits {
+            mergeTrack(t.box, hit: t.hit, floor: t.floor, dropped: t.dropped,
+                app: t.hit.windowID.flatMap { apps[$0] }, now: now, limitLines: &limitLines)
+        }
         hits.append(contentsOf: newHits, since: since)
         if keepFrame {
             let f = FrameStat(
@@ -287,10 +537,118 @@ final class TuningReadout {
         if action.hasPrefix("drop") { lastDrop = e }
     }
 
-    /// Demo / selftest only: back to empty.
+    /// The box's status and the floor its bar is drawn against, from its
+    /// verdict; nil for a box no row shows (a covered class the current
+    /// policy does not block, a class with no rule). A demoted box keeps
+    /// its RAW label's row and floor, so an exposed box the rule relabelled
+    /// reads as removed BY that rule, not as a covered-class box.
+    static func fate(
+        _ v: TuningPolicy.Verdict, raw d: Detection, tuning: TuningPolicy, mode: PolicyMode, blockFaces: Bool
+    ) -> (TrackRow.Status, Float)? {
+        let rawFloor = tuning.startThreshold(d.label, mode: mode, blockFaces: blockFaces)
+        let ownFloor = tuning.startThreshold(v.label, mode: mode, blockFaces: blockFaces) ?? 0
+        switch v.policy {
+        case let .passes(floor, _): return (.covered, floor)
+        case let .kept(start, _, _): return (.covered, start)
+        case let .belowThreshold(t):
+            return v.demotion != nil ? (.removed("covered-beats-exposed"), rawFloor ?? t) : (.below, t)
+        case .classOffInPolicy:
+            guard v.demotion != nil, let rawFloor else { return nil }
+            return (.removed("covered-beats-exposed"), rawFloor)
+        case let .minBox(_, _, minBoxFraction):
+            // `TuningPolicy.minBox` checks the fraction first; name the one
+            // that cut, as the Detection view does.
+            let byFraction = minBoxFraction > 0 && Double(d.box.width * d.box.height) < minBoxFraction
+            return (.removed(byFraction ? "minBoxFraction" : "minBoxPt"), ownFloor)
+        case let .thresholdStep(floor, _, _): return (.removed("size step"), floor)
+        case .outsideROI: return (.removed("outside ROI"), ownFloor)
+        case .weak, .notPolicyClass: return nil
+        }
+    }
+
+    /// Lock held. One box into its track (see `TrackKey` for how a box with
+    /// no credited window finds one); a new track past `trackCapacity`
+    /// evicts the lowest-ranked one, counted and reported.
+    private func mergeTrack(
+        _ box: CGRect, hit: Hit, floor: Float, dropped: Bool, app: String?, now: Double,
+        limitLines: inout [String]
+    ) {
+        let g = Self.trackGrid
+        let cx = min(g - 1, max(0, Int(box.midX * CGFloat(g))))
+        let cy = min(g - 1, max(0, Int((1 - box.midY) * CGFloat(g))))  // row 0 at the top, like the screen
+        let since = now - Self.windowSecs
+        var key = TrackKey(label: hit.label, windowID: hit.windowID, cellX: cx, cellY: cy)
+        if tracks[key].map({ $0.lastAt < since }) ?? true {
+            // The other side of the window rule: an uncredited box joins the
+            // most recently hit live track of its label and cell in any
+            // window; a credited box adopts a live uncredited one (re-keyed).
+            let sibling = tracks.values
+                .filter { $0.key.label == hit.label && $0.key.cellX == cx && $0.key.cellY == cy }
+                .filter { $0.lastAt >= since && (hit.windowID == nil || $0.key.windowID == nil) }
+                .max { $0.lastAt < $1.lastAt }
+            if let sibling {
+                if hit.windowID != nil {
+                    var t = tracks.removeValue(forKey: sibling.key)!
+                    t.key = key
+                    tracks[key] = t
+                } else {
+                    key = sibling.key
+                }
+            }
+        }
+        let status: TrackRow.Status = dropped ? .curtain : (hit.status ?? .below)
+        if var t = tracks[key], t.lastAt >= since {
+            t.lastAt = now
+            t.peak = max(t.peak, hit.conf)
+            t.latest = hit.conf
+            t.floor = floor
+            t.sidePt = hit.sidePt
+            t.judgedAs = hit.judgedAs
+            t.hits += 1
+            if status.weight >= t.status.weight { t.status = status }
+            if t.app == nil { t.app = app }
+            tracks[key] = t
+            return
+        }
+        tracks.removeValue(forKey: key)  // aged out: a new row, not a resurrection
+        if tracks.count >= Self.trackCapacity { tracks = tracks.filter { $0.value.lastAt >= since } }
+        if tracks.count >= Self.trackCapacity {
+            let victim = tracks.values.min { Self.rank($0, now: now) < Self.rank($1, now: now) }!
+            tracks.removeValue(forKey: victim.key)
+            tracksEvicted += 1
+            if !trackCapFull {
+                trackCapFull = true
+                limitLines.append(
+                    "track table full: budget=TuningReadout.trackCapacity configured=\(Self.trackCapacity) "
+                        + "observed=\(Self.trackCapacity + 1) live tracks; the lowest-ranked row is evicted "
+                        + "and counted on the Developer tab (fix: TuningReadout.trackCapacity)")
+            }
+        } else {
+            trackCapFull = false
+        }
+        tracks[key] = Track(
+            key: key, app: app, lastAt: now, peak: hit.conf, latest: hit.conf, floor: floor,
+            sidePt: hit.sidePt, status: status, hits: 1, judgedAs: hit.judgedAs)
+    }
+
+    static func rank(_ t: Track, now: Double) -> Double {
+        Double(t.peak) * pow(0.5, max(0, now - t.lastAt) / rankHalfLifeSecs)
+    }
+
+    /// The Tiles row's codes (`ZoomTiles.classCode`): FBE … AE, and FBC / FGC
+    /// / BC for the covered classes, which were all "covered" here; Copy
+    /// carries the full label.
+    static func classCode(_ label: String) -> String { ZoomTiles.classCode(label) }
+
+    /// The tab's Clear, the demo and the selftest: back to empty.
     func reset() {
         lock.lock()
         defer { lock.unlock() }
+        tracks.removeAll()
+        tracksEvicted = 0
+        trackCapFull = false
+        attributionSkipped = 0
+        attributionMismatch = false
         hits.reset()
         frames.reset()
         suppressions.removeAll()
@@ -305,6 +663,9 @@ final class TuningReadout {
         let suppressions = self.suppressions
         let curtain = self.curtain
         let lastDrop = self.lastDrop
+        let tracks = self.tracks
+        let tracksEvicted = self.tracksEvicted
+        let attributionSkipped = self.attributionSkipped
         lock.unlock()
         let since = now - Self.windowSecs
         var byLabel: [String: (hits: Int, minPt: Double?, maxPt: Double?, maxConf: Float)] = [:]
@@ -319,6 +680,16 @@ final class TuningReadout {
             byLabel[h.label] = s
         }
         var out = Snapshot()
+        // Ranked HERE, on the 1 Hz settings tick, never per frame: a row
+        // moves at most once a second, and the view animates the move.
+        out.rows = tracks.values.filter { $0.lastAt >= since }.map { t in
+            TrackRow(
+                id: t.key.id, label: t.key.label, windowID: t.key.windowID, app: t.app, peak: t.peak,
+                latest: t.latest, floor: t.floor, sidePt: t.sidePt, status: t.status, hits: t.hits,
+                ageSecs: max(0, now - t.lastAt), rank: Self.rank(t, now: now), judgedAs: t.judgedAs)
+        }.sorted { $0.rank != $1.rank ? $0.rank > $1.rank : $0.id < $1.id }
+        out.tracksEvicted = tracksEvicted
+        out.attributionSkipped = attributionSkipped
         let order = TuningPolicy.exposedLabels + TuningPolicy.coveredLabels
         out.classes = order.compactMap { label in
             byLabel[label].map { ClassStat(label: label, hits: $0.hits, minPt: $0.minPt, maxPt: $0.maxPt, maxConf: $0.maxConf) }
@@ -372,6 +743,9 @@ final class UIDevTuning: ObservableObject {
     }
 
     let readout: TuningReadout
+    /// The Tiles row's model (ZoomTilesView.swift): its monitor rides each
+    /// pipeline like `readout`, and its preview attaches to it.
+    let tiles: UIDevTiles
     let stateRoot: String
     /// The launch policy the file layers over (`Options.tuning`) and its
     /// source name — what Reset returns to.
@@ -406,8 +780,9 @@ final class UIDevTuning: ObservableObject {
     var filePath: String { stateRoot + "/" + TuningFile.fileName }
 
     init(stateRoot: String, groupID: gid_t, base: TuningPolicy, baseSource: String,
-        readout: TuningReadout = TuningReadout())
+        readout: TuningReadout = TuningReadout(), tiles: UIDevTiles = UIDevTiles())
     {
+        self.tiles = tiles
         self.stateRoot = stateRoot
         self.groupID = groupID
         self.base = base
@@ -596,10 +971,67 @@ final class UIDevTuning: ObservableObject {
         }
     }
 
-    /// The settings tick (1 Hz): refresh the 60 s readout.
+    /// The settings tick (1 Hz): refresh the 60 s readout. While frozen the
+    /// ROWS stay exactly as they were (order and values, so they can be
+    /// read); the footer keeps updating. A freeze ends on its own after
+    /// `freezeSecs`.
     func tick(now: Double = CFAbsoluteTimeGetCurrent()) {
-        let s = readout.snapshot(now: now)
+        if let at = frozenAt, now - at >= Self.freezeSecs { frozenAt = nil }
+        var s = readout.snapshot(now: now)
+        if frozenAt != nil { s.rows = snapshot.rows }
         if s != snapshot { snapshot = s }
+        if devTabVisible { readout.keepActive(now: now) }
+        // While frozen the rows are pinned, so a quiet screen publishes
+        // nothing; this keeps "live in N s" counting down.
+        let remaining = freezeRemaining(now: now)
+        if remaining != freezeLeft { freezeLeft = remaining }
+        tiles.tick(zoomTiles: draft.zoomTiles)
+    }
+
+    /// FREEZE TIMEOUT: a frozen readout unfreezes by itself after this long.
+    /// 30 s (owner design 2026-10-20): half the 60 s window, so a frozen
+    /// list never hides more than half a window of re-ranking from someone
+    /// who walked away; DERIVED from `TuningReadout.windowSecs`, ASSUMED as
+    /// enough time to read a dozen rows.
+    static let freezeSecs: Double = 30
+    /// When Freeze was pressed; nil = live. Main thread.
+    @Published private(set) var frozenAt: Double?
+    /// `freezeRemaining` as of the last tick, published so the Freeze
+    /// button's countdown redraws each second.
+    @Published private(set) var freezeLeft = 0
+    /// The Developer section is on screen (its onAppear / onDisappear):
+    /// each tick then extends the readout's recording window.
+    var devTabVisible = false {
+        didSet { if devTabVisible { readout.keepActive(now: CFAbsoluteTimeGetCurrent()) } }
+    }
+
+    func freeze(now: Double = CFAbsoluteTimeGetCurrent()) {
+        frozenAt = now
+        freezeLeft = freezeRemaining(now: now)
+    }
+    func unfreeze(now: Double = CFAbsoluteTimeGetCurrent()) {
+        frozenAt = nil
+        tick(now: now)
+    }
+
+    /// Seconds until a freeze ends by itself (0 when live).
+    func freezeRemaining(now: Double = CFAbsoluteTimeGetCurrent()) -> Int {
+        guard let at = frozenAt else { return 0 }
+        return max(0, Int((Self.freezeSecs - (now - at)).rounded(.up)))
+    }
+
+    /// Clear: every row, count and footer line goes; a freeze ends.
+    func clearReadout(now: Double = CFAbsoluteTimeGetCurrent()) {
+        readout.reset()
+        frozenAt = nil
+        tick(now: now)
+    }
+
+    /// Copy (the readout's): every row, then the footer, as text.
+    func copyReadout() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(UIDeveloperSettingsSection.readoutText(snapshot), forType: .string)
     }
 
     static let clock: DateFormatter = {
@@ -627,9 +1059,19 @@ struct UIDeveloperSettingsSection: View {
     @ObservedObject var tuning: UIDevTuning
 
     static let idPrefix = "ui.settings.developer"
-    static let sectionCaption = "Curtain tuning. Every change writes parent/tuning.json; the agent reloads it within 1 s."
-    static let resetLabel = "Reset to shipped defaults"
-    static let copyLabel = "Copy as config.json tuning"
+    static let sectionCaption = "Writes parent/tuning.json; the agent reloads it within 1 s."
+    /// Short, so both buttons fit one row at the popover's width (the long
+    /// forms truncated, VM --ui-demo render 2026-10-20); `.help` keeps them.
+    static let resetLabel = "Reset"
+    static let resetHelp = "Reset every value to the shipped defaults"
+    static let copyLabel = "Copy JSON"
+    static let copyHelp = "Copy the tuning as a config.json \"tuning\" block"
+
+    /// Classes whose size steps, minBoxPt and entryFrames are showing. All
+    /// closed at first: the threshold is the control a floor change needs,
+    /// and five open blocks were most of the tab (VM render 2026-10-20).
+    @State private var openClasses: Set<String> = []
+    @State private var detailsOpen = false
 
     /// The classes the current sensitivity blocks: the five exposed always,
     /// the three covered under Strict.
@@ -650,11 +1092,6 @@ struct UIDeveloperSettingsSection: View {
                         .uiFont(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(Self.stepsHelp)
-                        .uiFont(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .uiControl("\(Self.idPrefix).stepsHelp", kind: .text, read: { Self.stepsHelp })
                     appliedRow
                     ForEach(labels, id: \.self) { label in
                         Divider()
@@ -666,10 +1103,12 @@ struct UIDeveloperSettingsSection: View {
                     HStack(spacing: 8) {
                         Button(Self.resetLabel) { actions.resetDevTuning() }
                             .controlSize(.small)
+                            .help(Self.resetHelp)
                             .uiControl("\(Self.idPrefix).reset", kind: .button,
                                 read: { Self.resetLabel }, activate: { actions.resetDevTuning() })
                         Button(Self.copyLabel) { tuning.copyConfigJSON() }
                             .controlSize(.small)
+                            .help(Self.copyHelp)
                             .uiControl("\(Self.idPrefix).copy", kind: .button,
                                 read: { Self.copyLabel }, activate: { tuning.copyConfigJSON() })
                     }
@@ -687,6 +1126,13 @@ struct UIDeveloperSettingsSection: View {
             UISection { readout }
         }
         .uiScrollAnchor("\(Self.idPrefix).reset")
+        .onAppear { tuning.devTabVisible = true }
+        .onDisappear { tuning.devTabVisible = false }
+        // A refused steps entry opens its class, so the refusal under the
+        // field is on screen; it then closes like any open class.
+        .onChange(of: tuning.editError) { _, error in
+            if let label = labels.first(where: { Self.refusal(error, for: $0) != nil }) { openClasses.insert(label) }
+        }
     }
 
     private var appliedRow: some View {
@@ -699,22 +1145,72 @@ struct UIDeveloperSettingsSection: View {
             .uiControl("\(Self.idPrefix).applied.state", kind: .text, read: { tuning.applied.stateName })
     }
 
+    /// One class: its name and threshold always; size steps, minBoxPt and
+    /// entryFrames behind the name's chevron. Closed, a line names any of
+    /// those three that differ from Reset's values, so nothing in force is
+    /// out of sight unannounced. A refused steps entry opens its class.
     @ViewBuilder private func classRows(_ label: String) -> some View {
         let rule = tuning.draft.rule(for: label) ?? TuningPolicy.ClassRule(threshold: 0)
-        Text(label)
-            .uiFont(.caption)
-            .fontWeight(.semibold)
-            .uiControl("\(Self.idPrefix).\(label)", kind: .text, read: { label })
+        // A refused entry opens its class by joining `openClasses` (the
+        // body's onChange), so the chevron and `.more` read one state and
+        // one click closes it.
+        let open = openClasses.contains(label)
+        let toggle = {
+            if openClasses.contains(label) { openClasses.remove(label) } else { openClasses.insert(label) }
+        }
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: open ? "chevron.down" : "chevron.right")
+                    .uiFont(.caption2, weight: .bold)
+                    .frame(width: 10)
+                    .accessibilityHidden(true)
+                Text(label)
+                    .uiFont(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .uiControl("\(Self.idPrefix).\(label)", kind: .text, read: { label })
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(open ? "Expanded" : "Collapsed")
+        .uiControl("\(Self.idPrefix).\(label).more", kind: .button,
+            read: { openClasses.contains(label) ? "open" : "closed" }, activate: toggle)
         sliderRow("threshold", id: "\(Self.idPrefix).\(label).threshold", value: Double(rule.threshold),
             range: 0.5...1.0, step: 0.01, decimals: 2)
         { v in _ = tuning.applyThreshold(label, Float(v)) }
-        stepsRow(label)
-        sliderRow("minBoxPt", id: "\(Self.idPrefix).\(label).minBoxPt", value: rule.minBoxPt,
-            range: 0...200, step: 1, decimals: 0)
-        { v in tuning.setClass(label) { $0.minBoxPt = v } }
-        sliderRow("entryFrames", id: "\(Self.idPrefix).\(label).entryFrames", value: Double(rule.entryFrames),
-            range: 1...10, step: 1, decimals: 0)
-        { v in tuning.setClass(label) { $0.entryFrames = Int(v) } }
+        if open {
+            stepsRow(label)
+            sliderRow("minBoxPt", id: "\(Self.idPrefix).\(label).minBoxPt", value: rule.minBoxPt,
+                range: 0...200, step: 1, decimals: 0)
+            { v in tuning.setClass(label) { $0.minBoxPt = v } }
+            sliderRow("entryFrames", id: "\(Self.idPrefix).\(label).entryFrames", value: Double(rule.entryFrames),
+                range: 1...10, step: 1, decimals: 0)
+            { v in tuning.setClass(label) { $0.entryFrames = Int(v) } }
+        } else if let changed = Self.closedSummary(rule, base: tuning.base.rule(for: label)) {
+            Text(changed)
+                .uiFont(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.leading, Self.valueInset)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).\(label).changed", kind: .text, read: { changed })
+        }
+    }
+
+    /// A closed class's line: which hidden values differ from `base`
+    /// (Reset's policy), with the staircase read back as its rule. nil when
+    /// all three match.
+    static func closedSummary(_ r: TuningPolicy.ClassRule, base: TuningPolicy.ClassRule?) -> String? {
+        var parts: [String] = []
+        if r.thresholdSteps != (base?.thresholdSteps ?? []) {
+            parts.append(r.thresholdSteps.isEmpty
+                ? "no size steps" : "steps \(TuningPolicy.stepsText(r.thresholdSteps))")
+        }
+        if r.minBoxPt != (base?.minBoxPt ?? 0) { parts.append("minBoxPt \(TuningReadout.fmt(r.minBoxPt))") }
+        if let b = base, r.entryFrames != b.entryFrames { parts.append("entryFrames \(r.entryFrames)") }
+        return parts.isEmpty ? nil : "Changed: " + parts.joined(separator: " · ")
     }
 
     @ViewBuilder private var sharedRows: some View {
@@ -755,13 +1251,14 @@ struct UIDeveloperSettingsSection: View {
             // The UI scripts scroll here to render the steadiness rows.
             .uiScrollAnchor("\(Self.idPrefix).settleRecheck")
         // Zoom (tiling) prototype (`ZoomTiles`): one 2 × 2 tile per frame in
-        // rotation on top of the full-frame pass. Off by default.
+        // rotation on top of the full-frame pass.
         Toggle(isOn: Binding(
             get: { tuning.draft.zoomTiles },
             set: { on in tuning.draft.zoomTiles = on; actions.commitDevTuning() }))
         {
-            Text("zoomTiles (2 × 2, one tile per frame)").uiFont(.caption)
+            Text("zoomTiles").uiFont(.caption)
         }
+        .help("The zoom pass: one tile of a 2 × 2 grid per frame, on top of the full frame")
         .toggleStyle(.checkbox)
         .uiControl("\(Self.idPrefix).zoomTiles", kind: .toggle,
             read: { tuning.draft.zoomTiles ? "on" : "off" },
@@ -769,13 +1266,21 @@ struct UIDeveloperSettingsSection: View {
                 tuning.draft.zoomTiles.toggle()
                 actions.commitDevTuning()
             })
-        sliderRow("curtain.triggerHits", id: "\(Self.idPrefix).curtain.triggerHits",
+        // What the zoom pass is doing (ZoomTilesView.swift): only while it is on.
+        if tuning.draft.zoomTiles {
+            UIDevTilesRow(actions: actions, tiles: tuning.tiles)
+        }
+        Text("curtain")
+            .uiFont(.caption)
+            .fontWeight(.semibold)
+            .padding(.top, 2)
+        sliderRow("triggerHits", id: "\(Self.idPrefix).curtain.triggerHits",
             value: Double(tuning.draft.curtain.triggerHits), range: 1...10, step: 1, decimals: 0)
         { v in tuning.setTriggerHits(Int(v)) }
-        sliderRow("curtain.windowSecs", id: "\(Self.idPrefix).curtain.windowSecs",
+        sliderRow("windowSecs", id: "\(Self.idPrefix).curtain.windowSecs",
             value: tuning.draft.curtain.windowSecs, range: 0.25...5, step: 0.25, decimals: 2)
         { v in tuning.draft.curtain.windowSecs = v }
-        sliderRow("curtain.holdSecs", id: "\(Self.idPrefix).curtain.holdSecs",
+        sliderRow("holdSecs", id: "\(Self.idPrefix).curtain.holdSecs",
             value: tuning.draft.curtain.holdSecs, range: 0.5...60, step: 0.5, decimals: 1)
         { v in tuning.draft.curtain.holdSecs = v }
     }
@@ -794,7 +1299,7 @@ struct UIDeveloperSettingsSection: View {
             Text(name)
                 .uiFont(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .leading)
+                .frame(width: Self.labelWidth, alignment: .leading)
             Slider(
                 value: Binding(get: { value }, set: { set($0) }),
                 in: range, step: step,
@@ -850,12 +1355,13 @@ struct UIDeveloperSettingsSection: View {
             Text(Self.stepsRowLabel)
                 .uiFont(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .leading)
+                .frame(width: Self.labelWidth, alignment: .leading)
             TextField(Self.stepsPlaceholder, text: Binding(
                 get: { tuning.stepsFieldText(label) },
                 set: { tuning.setStepsEntry(label, $0) }))
                 .textFieldStyle(.roundedBorder)
                 .uiFont(.caption2, monospacedDigit: true)
+                .help(Self.stepsHelp)
                 .onSubmit { commit(tuning.stepsFieldText(label)) }
             // Clearing is the one edit a typist gets wrong (an empty field
             // plus Return reads as "nothing happened"): one button, shown
@@ -883,7 +1389,7 @@ struct UIDeveloperSettingsSection: View {
         Text(refused ?? Self.stepsReadback(threshold: rule.threshold, steps: rule.thresholdSteps))
             .uiFont(.caption2)
             .foregroundStyle(refused == nil ? Color.secondary : Color(nsColor: .systemRed))
-            .padding(.leading, 98)
+            .padding(.leading, Self.valueInset)
             .fixedSize(horizontal: false, vertical: true)
             .uiControl("\(id).reads", kind: .text, read: { [tuning] in
                 if let e = Self.refusal(tuning.editError, for: label) { return e }
@@ -911,10 +1417,18 @@ struct UIDeveloperSettingsSection: View {
         return parts.joined(separator: ", ")
     }
 
+    /// The slider rows' name column; the readback lines start where the
+    /// controls do (`valueInset`). 92 pt fits "coveredOverlap" in caption2.
+    static let labelWidth: CGFloat = 92
+    static let valueInset: CGFloat = labelWidth + 6
+
     static let stepsRowLabel = "size steps"
-    static let stepsPlaceholder = "none — e.g. 64:0.90, 128:0.95"
+    /// Short enough for the field at the popover's width ("none — e.g. …"
+    /// clipped, VM render 2026-10-20); empty already reads as none.
+    static let stepsPlaceholder = "e.g. 64:0.90, 128:0.95"
     static let stepsClearLabel = "Clear"
-    /// One help line for the whole tab (eight fields share the grammar):
+    /// The steps fields' tooltip (eight fields share the grammar; as a
+    /// paragraph on the tab it was six lines over every class):
     /// what a step is, how it is written, and the four rules the parser
     /// refuses by name (`TuningPolicy.validateSteps`).
     static let stepsHelp = "Size steps raise a class's threshold for bigger boxes. Write size:threshold pairs, comma-separated, up to \(TuningPolicy.ClassRule.maxSteps) — 64:0.90 means a box 64 pt or larger (shorter side) needs 0.90. Sizes ascending; every step at or above the class threshold. Return applies; a refused entry is named below and nothing is written."
@@ -944,7 +1458,8 @@ struct UIDeveloperSettingsSection: View {
 
     // MARK: Readout
 
-    static let readoutEmptyText = "No policy-class detections in the last 60 s."
+    static let readoutEmptyText = "No policy-class detections in the last 60 s. "
+        + "Recording runs while this tab is open and for 10 min after."
 
     private var readout: some View {
         let s = tuning.snapshot
@@ -955,31 +1470,37 @@ struct UIDeveloperSettingsSection: View {
                     .foregroundStyle(.secondary)
                     .uiControl("\(Self.idPrefix).readout.empty", kind: .text, read: { Self.readoutEmptyText })
             }
-            ForEach(s.classes, id: \.label) { c in
-                Text(Self.classLine(c))
+            readoutControls
+            if !s.isEmpty {
+                Text(Self.keyText)
                     .uiFont(.caption2)
-                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .uiControl("\(Self.idPrefix).readout.\(c.label)", kind: .text,
-                        read: { [tuning] in tuning.snapshot.classes.first { $0.label == c.label }.map(Self.classLine) ?? "" })
+                    .uiControl("\(Self.idPrefix).readout.key", kind: .text, read: { Self.keyText })
             }
+            let shown = Array(s.rows.prefix(Self.visibleRows))
+            ForEach(Array(shown.enumerated()), id: \.element.id) { i, row in
+                UIDevTrackRow(row: row)
+                    .uiControl("\(Self.idPrefix).readout.row.\(i)", kind: .text,
+                        read: { [tuning] in
+                            tuning.snapshot.rows.indices.contains(i) ? Self.rowLine(tuning.snapshot.rows[i]) : ""
+                        })
+            }
+            .animation(.easeInOut(duration: 0.35), value: shown.map(\.id))
+            if s.rows.count > shown.count {
+                Text(Self.moreRowsLine(s))
+                    .uiFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .uiControl("\(Self.idPrefix).readout.more", kind: .text,
+                        read: { [tuning] in Self.moreRowsLine(tuning.snapshot) })
+            }
+            if !s.rows.isEmpty { Divider() }
             Text(Self.dropLine(s))
                 .uiFont(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .uiControl("\(Self.idPrefix).readout.drop", kind: .text, read: { [tuning] in Self.dropLine(tuning.snapshot) })
-            Text(Self.suppressedLine(s))
-                .uiFont(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .uiControl("\(Self.idPrefix).readout.suppressed", kind: .text,
-                    read: { [tuning] in Self.suppressedLine(tuning.snapshot) })
-            Text(Self.stepsLine(s))
-                .uiFont(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .uiControl("\(Self.idPrefix).readout.steps", kind: .text,
-                    read: { [tuning] in Self.stepsLine(tuning.snapshot) })
+            readoutDetails(s)
             if s.overflow > 0 {
                 UIInlineMessage(
                     text: "Readout hit ring full: \(s.overflow) in-window hits evicted "
@@ -992,7 +1513,171 @@ struct UIDeveloperSettingsSection: View {
                         + "(TuningReadout.frameCapacity \(TuningReadout.frameCapacity), UIDevTuning.swift)",
                     symbol: UISymbol.warning, tint: .systemOrange)
             }
+            if s.tracksEvicted > 0 {
+                UIInlineMessage(text: Self.tracksEvictedLine(s), symbol: UISymbol.warning, tint: .systemOrange)
+                    .uiControl("\(Self.idPrefix).readout.tracksEvicted", kind: .text,
+                        read: { [tuning] in Self.tracksEvictedLine(tuning.snapshot) })
+            }
+            if s.attributionSkipped > 0 {
+                UIInlineMessage(text: Self.attributionSkippedLine(s), symbol: UISymbol.warning, tint: .systemOrange)
+            }
         }
+    }
+
+    /// The suppression counts and the staircase line, behind one
+    /// disclosure that says how many boxes the rules removed. Together, so
+    /// "threshold step N" is never read without the line that says what N
+    /// did to frames (`stepsLine`). The ring-full warnings stay outside:
+    /// a limit is never folded away.
+    @ViewBuilder private func readoutDetails(_ s: TuningReadout.Snapshot) -> some View {
+        let toggle = { detailsOpen.toggle() }
+        Button(action: toggle) {
+            HStack(spacing: 4) {
+                Image(systemName: detailsOpen ? "chevron.down" : "chevron.right")
+                    .uiFont(.caption2, weight: .bold)
+                    .accessibilityHidden(true)
+                Text(Self.detailsTitle(s)).uiFont(.caption2)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(detailsOpen ? "Expanded" : "Collapsed")
+        .uiControl("\(Self.idPrefix).readout.details", kind: .button,
+            read: { detailsOpen ? "open" : "closed" }, activate: toggle)
+        if detailsOpen {
+            Text(Self.suppressedLine(s))
+                .uiFont(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).readout.suppressed", kind: .text,
+                    read: { [tuning] in Self.suppressedLine(tuning.snapshot) })
+            Text(Self.stepsLine(s))
+                .uiFont(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).readout.steps", kind: .text,
+                    read: { [tuning] in Self.stepsLine(tuning.snapshot) })
+        }
+    }
+
+    /// "Removed by rules: 24" — the details disclosure's title.
+    static func detailsTitle(_ s: TuningReadout.Snapshot) -> String {
+        "Removed by rules: \(s.suppressedMinBox + s.suppressedCovered + s.stepBoxesCut)"
+    }
+
+    /// What the row symbols mean, once above the rows. Short enough for one
+    /// line at the popover's width (the long form wrapped "⊘" away from
+    /// its words, VM render 2026-10-20); each row's tooltip has the words.
+    static let keyText = "✓ curtain · ◼ covered · ○ below floor · ⊘ removed"
+
+    /// ROWS SHOWN on the tab. 12 (2026-10-20), ASSUMED: about what fits the
+    /// popover's Developer page without the list pushing the footer out of
+    /// sight; the rest are counted below the list ("+N more") and every row
+    /// is in Copy, so nothing is hidden without saying so.
+    static let visibleRows = 12
+
+    static let freezeLabel = "Freeze"
+    static let clearLabel = "Clear"
+    static let copyReadoutLabel = "Copy readout"
+
+    private var readoutControls: some View {
+        let frozen = tuning.frozenAt != nil
+        let freezeText = frozen ? "Frozen — live in \(max(1, tuning.freezeLeft)) s" : Self.freezeLabel
+        let toggle = { [tuning] in
+            if tuning.frozenAt == nil { tuning.freeze() } else { tuning.unfreeze() }
+        }
+        return HStack(spacing: 8) {
+            Button(freezeText, action: toggle)
+                .controlSize(.small)
+                .uiControl("\(Self.idPrefix).readout.freeze", kind: .toggle,
+                    read: { [tuning] in tuning.frozenAt == nil ? "off" : "on" }, activate: toggle)
+            Button(Self.clearLabel) { tuning.clearReadout() }
+                .controlSize(.small)
+                .uiControl("\(Self.idPrefix).readout.clear", kind: .button,
+                    read: { Self.clearLabel }, activate: { [tuning] in tuning.clearReadout() })
+            Button(Self.copyReadoutLabel) { tuning.copyReadout() }
+                .controlSize(.small)
+                .uiControl("\(Self.idPrefix).readout.copy", kind: .button,
+                    read: { Self.copyReadoutLabel }, activate: { [tuning] in tuning.copyReadout() })
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// "0.93 · floor 0.90" — the row's score text. Latest follows when it
+    /// differs from the peak.
+    static func scoreText(_ r: TuningReadout.TrackRow) -> String {
+        let floorName = r.judgedAs == nil ? "floor" : "covered floor"
+        var t = "\(TuningReadout.conf(r.peak)) · \(floorName) \(TuningReadout.conf(r.floor))"
+        if r.latest != r.peak { t += " (latest \(TuningReadout.conf(r.latest)))" }
+        return t
+    }
+
+    /// The row's status in words; a relabelled box names the rule and the
+    /// class it was judged as.
+    static func statusText(_ r: TuningReadout.TrackRow) -> String {
+        guard let to = r.judgedAs else { return r.status.text }
+        return r.status.text + " as \(to) (covered-beats-exposed)"
+    }
+
+    /// The row's first line ends in its peak alone ("0.93", latest after it
+    /// when it differs); the floor moved to line 2. With the floor beside
+    /// the peak a relabelled row ("0.71 · covered floor 0.60") ran past the
+    /// popover column and widened the whole tab (VM render 2026-10-20).
+    static func peakText(_ r: TuningReadout.TrackRow) -> String {
+        var t = TuningReadout.conf(r.peak)
+        if r.latest != r.peak { t += " (latest \(TuningReadout.conf(r.latest)))" }
+        return t
+    }
+
+    /// The row's second line on the tab: floor, then `metaText`.
+    static func floorMetaText(_ r: TuningReadout.TrackRow) -> String {
+        (r.judgedAs == nil ? "floor " : "covered floor ") + TuningReadout.conf(r.floor) + " · " + metaText(r)
+    }
+
+    /// Box size, app, age (`UIDevTrackRow`'s second line, after the floor).
+    static func metaText(_ r: TuningReadout.TrackRow) -> String {
+        [r.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "—", r.app ?? "—", ageText(r.ageSecs)]
+            .joined(separator: " · ")
+    }
+
+    static func ageText(_ secs: Double) -> String { "\(Int(secs.rounded(.down))) s" }
+
+    /// One row as text: what the row's id reads, and one line of Copy.
+    static func rowLine(_ r: TuningReadout.TrackRow) -> String {
+        let size = r.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "size unmeasured"
+        return "\(r.status.symbol) \(r.code) \(scoreText(r)) \(size) \(r.app ?? "app unknown") \(ageText(r.ageSecs))"
+            + " — \(statusText(r))" + (r.nearMiss ? " · near miss" : "")
+    }
+
+    static func moreRowsLine(_ s: TuningReadout.Snapshot) -> String {
+        "+\(s.rows.count - min(s.rows.count, visibleRows)) more rows (UIDeveloperSettingsSection.visibleRows "
+            + "\(visibleRows)); Copy readout has all \(s.rows.count)"
+    }
+
+    static func tracksEvictedLine(_ s: TuningReadout.Snapshot) -> String {
+        "Readout track table full: \(s.tracksEvicted) rows evicted, lowest-ranked first "
+            + "(TuningReadout.trackCapacity \(TuningReadout.trackCapacity), UIDevTuning.swift)"
+    }
+
+    static func attributionSkippedLine(_ s: TuningReadout.Snapshot) -> String {
+        "\(s.attributionSkipped) frames counted without window or curtain mark (policy mirror disagreed "
+            + "with the pipeline; TuningReadout.record)"
+    }
+
+    /// Copy readout: every row, ranked, then the footer and the per-class
+    /// totals. Labels, numbers and app names only.
+    static func readoutText(_ s: TuningReadout.Snapshot) -> String {
+        var lines = ["SentryScreen Developer readout, last \(Int(TuningReadout.windowSecs)) s "
+            + "(rank = peak × 0.5^(age / \(Int(TuningReadout.rankHalfLifeSecs)) s))"]
+        lines += s.rows.map { "\(rowLine($0)) [\($0.label), window \($0.windowID.map { String($0) } ?? "-"), \($0.hits) hits]" }
+        if s.rows.isEmpty { lines.append(readoutEmptyText) }
+        lines += [dropLine(s), suppressedLine(s), stepsLine(s)]
+        lines += s.classes.map(classLine)
+        if s.tracksEvicted > 0 { lines.append(tracksEvictedLine(s)) }
+        if s.attributionSkipped > 0 { lines.append(attributionSkippedLine(s)) }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     static func classLine(_ c: TuningReadout.ClassStat) -> String {
@@ -1002,8 +1687,11 @@ struct UIDeveloperSettingsSection: View {
 
     static func dropLine(_ s: TuningReadout.Snapshot) -> String {
         guard let d = s.lastDrop else { return "Last curtain drop: none in the last 60 s" }
-        return "Last curtain drop: \(d.action) window \(d.windowID)" + (d.app.map { " app=\($0)" } ?? "")
-            + " at \(UIDevTuning.clock.string(from: Date(timeIntervalSinceReferenceDate: d.at)))"
+        // App and time first, the way the rows read; the action and window
+        // id after, for matching against the log.
+        return "Last curtain drop: \(d.app ?? "app unknown") · "
+            + "\(UIDevTuning.clock.string(from: Date(timeIntervalSinceReferenceDate: d.at)))"
+            + " (\(d.action), window \(d.windowID))"
     }
 
     /// All three counts are 60 s frame-ring sums (`FrameStat`), so none can
@@ -1027,5 +1715,73 @@ struct UIDeveloperSettingsSection: View {
     static func stepsLine(_ s: TuningReadout.Snapshot) -> String {
         "Threshold steps: \(s.stepBoxesCut) boxes cut, \(s.stepFramesEmptied) of \(s.blockedFrames) "
             + "blocked frames emptied (a cut moves a curtain drop only if it empties its window that frame)"
+    }
+}
+
+/// One "Last 60 s" row: status, class code, a score bar with the class
+/// floor marked, the score text, box size, app and age. A near miss (peak
+/// within `TuningReadout.nearMissBand` under its floor) is tinted, because
+/// those are the rows a floor change would flip.
+struct UIDevTrackRow: View {
+    let row: TuningReadout.TrackRow
+    @Environment(\.uiTextScale) private var textScale
+
+    /// Bar length in points at text scale 1. DERIVED: 0.01 of score per
+    /// 0.64 pt, so a 0.05 near-miss gap is 3.2 pt, visible at a glance.
+    static let barWidth: CGFloat = 64
+
+    var body: some View {
+        let w = UITypography.points(Self.barWidth, scale: textScale)
+        let blocked = row.status == .curtain || row.status == .covered
+        // Two lines (2026-10-20): one line of seven fields wrapped every
+        // text to a column a few characters wide at the popover's width
+        // (VM --ui-demo render). Line 1 is what a floor change acts on
+        // (status, class, bar, score); line 2, indented under the class, is
+        // the floor it is judged against, then where and when. Each text
+        // stays on one line.
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                Text(row.status.symbol)
+                    .uiFont(.caption, weight: .bold)
+                    .foregroundStyle(row.status == .curtain ? SentryColor.ok : SentryColor.ink)
+                    .frame(minWidth: 12)
+                Text(row.code)
+                    .uiFont(.caption2, weight: .semibold)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 44, alignment: .leading)
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(SentryColor.line)
+                    Rectangle()
+                        .fill(blocked ? SentryColor.accent : SentryColor.muted)
+                        .frame(width: w * CGFloat(min(1, max(0, row.peak))))
+                    Rectangle()
+                        .fill(SentryColor.ink)
+                        .frame(width: 2)
+                        .offset(x: w * CGFloat(min(1, max(0, row.floor))) - 1)
+                }
+                .frame(width: w, height: 6)
+                .accessibilityHidden(true)
+                Text(UIDeveloperSettingsSection.peakText(row))
+                    .uiFont(.caption2)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            Text(UIDeveloperSettingsSection.floorMetaText(row))
+                .uiFont(.caption2)
+                .monospacedDigit()
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 18)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(row.nearMiss ? SentryColor.accentSoft : Color.clear)
+        .help(UIDeveloperSettingsSection.statusText(row) + (row.nearMiss ? " · near miss" : ""))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(UIDeveloperSettingsSection.rowLine(row))
     }
 }

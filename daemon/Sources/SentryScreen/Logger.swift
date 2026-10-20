@@ -1030,6 +1030,15 @@ final class FrameLogger {
         windowStart = now
     }
 
+    /// The exit summary: the open window, folded like any other. Calling
+    /// `printSummary` directly there skipped `foldSamples` (no `*P50` /
+    /// `*P90` in the last window) and divided the window's counts by the
+    /// whole run's time (live VM run, 2026-10-20: "134 frames, 0.5 fps").
+    func printFinalSummary(now: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) {
+        foldSamples()
+        printSummary(elapsed: now - windowStart)
+    }
+
     func printSummary(elapsed: CFAbsoluteTime, state: String = "active") {
         // A 0-frame window is only ever closed by idleTick (live lean) or by
         // a window of nothing but idle-gated frames; every other caller

@@ -73,49 +73,6 @@ enum UIVersion {
     }
 }
 
-/// A destructive confirmation drawn over the popover's sections: the copy,
-/// the two buttons, and the ids the driver taps. Equatable and value-only so
-/// it can ride in `UIActions.Layer` (the action itself is held separately —
-/// a closure is not Equatable and SwiftUI diffs this).
-///
-/// `title` + " " + `body` is the spec's confirmation copy VERBATIM, split at
-/// the sentence the parent must answer. That split is the NSAlert idiom
-/// (messageText / informativeText) and is what `copy` reassembles for the
-/// `.note` control the E2E scripts assert against — so the copy can never
-/// drift from the spec without failing a test.
-struct UIConfirm: Equatable {
-    let title: String
-    let body: String
-    let confirmLabel: String
-    /// `ui.settings.showicon`: `.confirm`, `.cancel` and
-    /// `.note` hang off it (spec §10.2).
-    let idPrefix: String
-    let symbol: String
-
-    var copy: String { title + " " + body }
-    var confirmID: String { idPrefix + ".confirm" }
-    var cancelID: String { idPrefix + ".cancel" }
-    var noteID: String { idPrefix + ".note" }
-
-    /// Spec §9.4 — the reveal hotkey is the whole point of confirming: an
-    /// icon that vanishes with no way back is a bug report, not a setting.
-    /// Review 2026-09-29 (item 9): the keys in Apple's modifier order
-    /// (⌃⌥⌘; all four are line-break class AL, so they never wrap apart);
-    /// no hyphenated word to break; and the one real way back. The hotkey is
-    /// armed only in an administrator's session (`armRevealHotkey`), and
-    /// Settings cannot re-enable it because Settings lives in the hidden
-    /// popover, so the old "re-enable it in Settings" was not a path.
-    static let revealKeys = "\u{2303}\u{2325}\u{2318}S"
-    static let hideIcon = UIConfirm(
-        title: "Hide the SentryScreen icon?",
-        body: "To bring it back, sign in to an administrator account on this Mac "
-            + "and press \(revealKeys).",
-        confirmLabel: "Hide icon",
-        idPrefix: "ui.settings.showicon",
-        symbol: UISymbol.hideIcon)
-
-}
-
 /// The three pause presets (spec §9.2 rows; OWNER copy). Timed presets cap
 /// at 1 hr and `untilRestart` is unbounded by design (Addendum 6H).
 enum PausePreset: String, CaseIterable {
@@ -173,11 +130,11 @@ final class UIActions: ObservableObject {
     static let machineWideNote = "Pausing turns off protection for everyone on this Mac."
 
     /// Which layer is drawn over the popover's sections. `settings` is the
-    /// §9.4 panel; `confirm` is a destructive step in front of a mutation.
-    /// `remove` is the §8.1(7) removal confirmation: its own layer rather
-    /// than a `UIConfirm`, because it asks two questions (keep or delete the
-    /// settings, clear the permission record or not) before it acts.
-    enum Layer: Equatable { case none, pin, setPin, settings, confirm(UIConfirm), remove, diagnosticsReview }
+    /// §9.4 panel. `remove` is the §8.1(7) removal confirmation, which asks
+    /// two questions (keep or delete the settings, clear the permission
+    /// record or not) before it acts. The generic `confirm` layer went with
+    /// its last caller, the hide-icon confirmation (2026-10-20).
+    enum Layer: Equatable { case none, pin, setPin, settings, remove, diagnosticsReview }
 
     /// A mutation waiting for the PIN. `body` runs on success and is dropped
     /// on cancel — never run early, never queued twice.
@@ -244,9 +201,6 @@ final class UIActions: ObservableObject {
     /// started inside the settings panel. Without it, changing a setting
     /// dumps the parent back to the status screen mid-task.
     private var returnLayer: Layer = .none
-    /// The mutation a `.confirm` layer will run on Accept, dropped on Cancel
-    /// — the same never-run-early contract as `Pending`.
-    private var confirmBody: (() -> Void)?
     /// The PIN this unlock window was opened with, so Change PIN… can hand
     /// it to `PinGate.setPin(_:current:)` instead of bypassing the gate's own
     /// current-PIN check. Lives exactly as long as the unlock window and is
@@ -281,20 +235,37 @@ final class UIActions: ObservableObject {
 
     /// The parent's answers to the two questions `uninstall.sh` accepts.
     /// Published so the confirmation's controls and the registry read one
-    /// source of truth (the `showIcon` row's rule).
+    /// source of truth.
     @Published var removeChoice = Uninstall.Choice()
     /// The Settings page on screen. On the actions object, not the panel's
     /// own @State: a PIN prompt or confirmation replaces the panel view and
     /// returns to a fresh one, and a parent who tapped Change PIN on App
-    /// must land back on App (settings-changepin.txt, hide-icon.txt). `nil`
+    /// must land back on App (settings-changepin.txt). `nil`
     /// until a page is shown: the panel then starts on
     /// `.general`.
     @Published var settingsTab: UISettingsTab?
-    /// Whether General's "More settings" fold is open (Settings-General,
-    /// Settings-App boards). Held here for the `settingsTab` reason: Change
-    /// PIN and Hide icon go through a PIN prompt or confirmation and must
-    /// land back on the open fold. Shut on every `openSettings()`.
-    @Published var moreSettingsOpen = false
+    /// The Developer tab passed the PIN (owner 2026-10-20: the tab itself is
+    /// behind it). Until the popover closes (`lock()`), the tab shows without
+    /// asking and its own changes run without asking again.
+    @Published private(set) var developerUnlocked = false
+    static let developerPin = "Open the Developer tab."
+
+    /// The one way onto the Developer tab: a tap, a script's `tap` or
+    /// `setText`, all go through here. Locked ⇒ the PIN first (or Set a PIN
+    /// with none), and the tab opens only once it passes; a wrong PIN or a
+    /// cancel leaves the page that was showing.
+    func showSettingsTab(_ tab: UISettingsTab) {
+        guard tab == .developer, !developerUnlocked else {
+            settingsTab = tab
+            return
+        }
+        requirePIN(Self.developerPin, returnTo: .settings) { [weak self] in
+            guard let self else { return }
+            developerUnlocked = true
+            settingsTab = .developer
+            log("pin", "developer tab unlocked until the popover closes")
+        }
+    }
     /// Where the removal has got to. `.idle` while the confirmation is still
     /// a question.
     @Published private(set) var removeStage: UninstallGate.Stage = .idle
@@ -362,7 +333,7 @@ final class UIActions: ObservableObject {
         log("uninstall", "stage=cancelled at the confirmation — nothing was changed")
     }
 
-    /// The popover footer's "Uninstall SentryScreen…", drawn in every popover
+    /// The popover footer's "Uninstall…", drawn in every popover
     /// state (owner 2026-10-16: someone stuck in a bug, such as a permission
     /// loop, must always be able to remove the app). The parent PIN is asked
     /// first when one is set; then the same card and Uninstaller as Settings.
@@ -373,7 +344,7 @@ final class UIActions: ObservableObject {
         }
     }
 
-    /// The Setup window's "Uninstall SentryScreen…". That window has no PIN
+    /// The Setup window's "Uninstall…". That window has no PIN
     /// keypad, so a set PIN is asked for in a plain alert and checked by the
     /// same `PinGate` (same lockout). Then the Uninstaller runs with the
     /// default choice (complete removal); its admin prompt is the last step.
@@ -488,12 +459,23 @@ final class UIActions: ObservableObject {
     /// The one wrapper (Addendum 6F). No PIN set ⇒ the set-PIN layer opens
     /// first and `body` runs on save (§4.3: until a PIN exists no mutation is
     /// possible, including by someone who is not the parent).
+    /// `developer`: a change made on the Developer tab, which runs without a
+    /// prompt while the tab is unlocked (`developerUnlocked`).
     func requirePIN(
         _ confirmation: String, note: String? = nil, returnTo: Layer = .none,
+        developer: Bool = false,
         onDrop: (() -> Void)? = nil,
         _ body: @escaping () -> Void
     ) {
         writeError = nil
+        if developer, developerUnlocked, store.parentPIN != nil {
+            let dropped = pending?.onDrop
+            pending = nil
+            dropped?()
+            layer = returnTo
+            body()
+            return
+        }
         returnLayer = returnTo
         let replaced = pending?.onDrop
         pending = Pending(confirmation: confirmation, note: note, body: body, onDrop: onDrop)
@@ -569,7 +551,6 @@ final class UIActions: ObservableObject {
     func openSettings() {
         writeError = nil
         settingsTab = nil
-        moreSettingsOpen = false
         layer = .settings
         returnLayer = .none
     }
@@ -582,28 +563,6 @@ final class UIActions: ObservableObject {
         diagnostics?.clearSendNotice()
     }
 
-    /// Puts a destructive confirmation in front of `body` (spec §9.4 hide
-    /// icon, §9.5 turn off). Cancel returns to `from` with `body` dropped.
-    func confirm(_ spec: UIConfirm, from: Layer, _ body: @escaping () -> Void) {
-        writeError = nil
-        returnLayer = from
-        confirmBody = body
-        layer = .confirm(spec)
-    }
-
-    func cancelConfirm() {
-        confirmBody = nil
-        layer = returnLayer
-    }
-
-    func acceptConfirm() {
-        let run = confirmBody
-        confirmBody = nil
-        // `run` opens the PIN layer itself (every mutation is gated), so the
-        // layer is left to it rather than reset here.
-        run?()
-    }
-
     /// Popover closed, or the parent cancelled: drop the unlock window, any
     /// pending mutation, and any derivation still in flight. Cancel is a real
     /// abort, not a repaint — see `epoch`.
@@ -614,7 +573,6 @@ final class UIActions: ObservableObject {
         pending = nil
         dropped?()
         returnLayer = .none
-        confirmBody = nil
         diagnosticsDraft = nil
         diagnostics?.clearSendNotice()
         verifiedPin = nil
@@ -624,6 +582,7 @@ final class UIActions: ObservableObject {
         pinError = nil
         setPinError = nil
         unlockedUntil = nil
+        developerUnlocked = false
         // The dropped completion will never clear this, so a close/reopen
         // mid-derivation must not leave the field disabled forever.
         busy = false
@@ -636,7 +595,11 @@ final class UIActions: ObservableObject {
     /// they came from is restored after the reset.
     func cancelLayer() {
         let back = returnLayer
+        // Cancelling a later prompt does not re-lock a Developer tab the
+        // parent already opened; the popover closing does.
+        let developer = developerUnlocked
         lock()
+        developerUnlocked = developer
         layer = back
     }
 
@@ -813,23 +776,7 @@ final class UIActions: ObservableObject {
     /// `mode: untilRestart`, behind the confirmation copy and then the PIN.
     /// It replaces Quit deliberately — a Quit in a watchdog-supervised agent
     /// is a lie, the process is back inside 60 s.
-    /// Spec §9.4. Turning the icon OFF names the reveal path before it takes
-    /// effect; turning it back on is an ordinary gated write.
-    func setShowMenuBarIcon(_ show: Bool) {
-        guard show else {
-            confirm(.hideIcon, from: .settings) { [weak self] in
-                self?.requirePIN("Hide the SentryScreen menu bar icon.", returnTo: .settings) {
-                    [weak self] in self?.write { $0.showMenuBarIcon = false }
-                }
-            }
-            return
-        }
-        requirePIN("Show the SentryScreen icon in the menu bar.", returnTo: .settings) { [weak self] in
-            self?.write { $0.showMenuBarIcon = true }
-        }
-    }
-
-    /// "Review a diagnostic report…": behind the parent PIN when one is set,
+    /// "Review Report": behind the parent PIN when one is set,
     /// then the review layer, where only Send reaches the network.
     func reviewDiagnosticReport() {
         guard store.parentPIN != nil else {
@@ -845,6 +792,9 @@ final class UIActions: ObservableObject {
         guard let agent = diagnostics else { return }
         writeError = nil
         diagnosticsDraft = nil
+        // The status shows on this layer since 2026-10-20, so a previous
+        // report's "sent" must not greet a new review as if it were this one's.
+        agent.clearSendNotice()
         layer = .diagnosticsReview
         let issued = epoch
         agent.prepare { [weak self] draft in
@@ -863,12 +813,22 @@ final class UIActions: ObservableObject {
         layer = .settings
     }
 
-    /// The owner pressed Send on the review: the report goes once.
+    /// The owner pressed Send on the review: the report goes once. The
+    /// layer stays up, keeping the text that was sent on screen, and shows
+    /// the send status (2026-10-20; it used to drop back to Settings and
+    /// show the notice under the button there).
     func sendDiagnosticReport() {
-        guard let draft = diagnosticsDraft, layer == .diagnosticsReview else { return }
-        diagnosticsDraft = nil
-        layer = .settings
+        guard let draft = diagnosticsDraft, layer == .diagnosticsReview,
+            Self.diagnosticsCanSend(draft: true, send: diagnosticsSend)
+        else { return }
         diagnostics?.send(draft)
+    }
+
+    /// Send is offered only for a built report that has not gone yet: once
+    /// any send state exists for this review (`openDiagnosticReview` clears
+    /// it), the report is sending or has been sent once.
+    static func diagnosticsCanSend(draft: Bool, send: DiagnosticsSendState?) -> Bool {
+        draft && send == nil
     }
 
     func setPolicy(_ mode: PolicyMode) {
@@ -887,7 +847,7 @@ final class UIActions: ObservableObject {
     /// (Addendum 6F). One PIN unlocks the usual window, so a tuning session
     /// types it once.
     func commitDevTuning() {
-        requirePIN("Apply the curtain tuning.", returnTo: .settings) { [weak self] in
+        requirePIN("Apply the curtain tuning.", returnTo: .settings, developer: true) { [weak self] in
             self?.devTuning?.writeFile()
         }
     }
@@ -895,7 +855,7 @@ final class UIActions: ObservableObject {
     /// "Reset to shipped defaults": removes the file; the agent returns to
     /// the launch policy and logs it.
     func resetDevTuning() {
-        requirePIN("Reset the curtain tuning to the launch policy.", returnTo: .settings) { [weak self] in
+        requirePIN("Reset the curtain tuning to the launch policy.", returnTo: .settings, developer: true) { [weak self] in
             self?.devTuning?.reset()
         }
     }
@@ -921,13 +881,13 @@ final class UIActions: ObservableObject {
         }
         requirePIN(DetectionViewCopy.pinTurnOn(mode),
             note: mode == .detectionsOnly ? DetectionViewCopy.pinTurnOnNote : nil,
-            returnTo: returnTo) { [weak self] in
+            returnTo: returnTo, developer: returnTo == .settings) { [weak self] in
             self?.detectionView.turnOn(mode)
         }
     }
 
     func renewDetectionView(returnTo: Layer) {
-        requirePIN(DetectionViewCopy.pinRenew, returnTo: returnTo) { [weak self] in
+        requirePIN(DetectionViewCopy.pinRenew, returnTo: returnTo, developer: returnTo == .settings) { [weak self] in
             self?.detectionView.renew()
         }
     }
@@ -939,12 +899,43 @@ final class UIActions: ObservableObject {
             detectionView.setSynthetic(false)
             return
         }
-        requirePIN(DetectionViewCopy.pinSynthetic, returnTo: .settings) { [weak self] in
+        requirePIN(DetectionViewCopy.pinSynthetic, returnTo: .settings, developer: true) { [weak self] in
             self?.detectionView.setSynthetic(true)
         }
     }
 
     func turnOffDetectionView() { detectionView.turnOff(reason: .user) }
+
+    /// The popover's window number while it is shown (UIStatusItem sets
+    /// it): the window the Tiles preview draws in and asks capture to exclude.
+    var popoverWindowNumber: () -> Int? = { nil }
+    /// A scroll anchor Settings returns to when it is next drawn. The PIN
+    /// layer replaces the sheet, which then reopens at its top: turning
+    /// the Tiles preview on landed the parent away from the thumbnails it
+    /// had just unlocked (live VM run, 2026-10-20).
+    var settingsReturnAnchor: String?
+
+    /// TUNING TOOL: the Tiles row's "Show blurred preview" (ZoomTilesView.swift).
+    /// On is behind the PIN — it puts screen pixels, however blurred, in the
+    /// popover; off never asks.
+    func setTilesPreview(_ on: Bool) {
+        guard let tiles = devTuning?.tiles else { return }
+        guard on else {
+            tiles.turnOffPreview(reason: .user)
+            return
+        }
+        // Back at the row on success or cancel.
+        settingsReturnAnchor = UIDevTilesRow.idPrefix
+        requirePIN(ZoomTilesCopy.pinPreview, returnTo: .settings, developer: true) { [weak self] in
+            tiles.turnOnPreview(window: self?.popoverWindowNumber())
+        }
+    }
+
+    /// The popover closed (UIStatusItem `popoverDidClose` and `remove`): the
+    /// Tiles preview draws in it, so it goes with it.
+    func popoverClosed() {
+        devTuning?.tiles.turnOffPreview(reason: .popoverClosed)
+    }
 
     func snapshotDetectionView() { detectionView.snapshot() }
 
@@ -1248,7 +1239,19 @@ struct UISettingsPanelView: View {
                         page
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .onAppear { UIScrollAnchors.shared.proxy = proxy }
+                    // A page opens at its top: switching tabs kept the old
+                    // page's offset, so Developer could open mid-page under
+                    // a scrolled General (VM render 2026-10-20).
+                    .id(Self.pageTop)
+                    .onChange(of: tab) { _, _ in proxy.scrollTo(Self.pageTop, anchor: .top) }
+                    .onAppear {
+                        UIScrollAnchors.shared.proxy = proxy
+                        if let anchor = actions.settingsReturnAnchor {
+                            actions.settingsReturnAnchor = nil
+                            // Next turn: the page's rows are laid out by then.
+                            DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+                        }
+                    }
                     .onDisappear { UIScrollAnchors.shared.proxy = nil }
                     // Page height, for the driver's `assertfits` fold report.
                     .background(GeometryReader { proxy in
@@ -1291,12 +1294,13 @@ struct UISettingsPanelView: View {
                     Image(systemName: UISymbol.lock)
                         .uiFont(.caption)
                         .accessibilityHidden(true)
-                    Text(Self.pinNote)
+                    Text(Self.pinNote(pinSet: actions.store.parentPIN != nil))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .uiFont(.caption)
                 .foregroundStyle(SentryColor.muted)
-                .uiControl("ui.settings.pinnote", kind: .text, read: { Self.pinNote })
+                .uiControl("ui.settings.pinnote", kind: .text,
+                    read: { [actions] in Self.pinNote(pinSet: actions.store.parentPIN != nil) })
                 Spacer(minLength: 0)
                 // Outlined, not mustard: no page of Settings has a primary.
                 Button("Done") { actions.closeSettings() }
@@ -1313,6 +1317,7 @@ struct UISettingsPanelView: View {
 
     static let title = "Settings"
     static let scrollSpace = "ui.settings.scroll"
+    static let pageTop = "ui.settings.page.top"
     /// A page this close to fitting reads as fitting: 4 pt is under one line
     /// of `.caption` padding, so the cue never flickers on rounding. ASSUMED,
     /// not measured: no installed page has been seen within 4 pt of fitting.
@@ -1342,7 +1347,11 @@ struct UISettingsPanelView: View {
         .uiControl("ui.settings.morebelow", kind: .text, read: { Self.moreBelowLabel })
     }
     /// Settings-General, verbatim.
-    static let pinNote = "Changes ask for your PIN"
+    static let pinNoteText = "Changes ask for your PIN"
+    /// With no PIN yet a change opens Set a PIN first (`requirePIN`), so
+    /// "your PIN" would name one that does not exist.
+    static let pinNoteNoPin = "Changes ask you to set a PIN"
+    static func pinNote(pinSet: Bool) -> String { pinSet ? pinNoteText : pinNoteNoPin }
 
     /// The selected page's sections — everything that scrolls.
     @ViewBuilder private var page: some View {
@@ -1353,8 +1362,7 @@ struct UISettingsPanelView: View {
             // same `actions.setPolicy` path, drawn as two described rows.
             UISettingsSensitivitySection(state: state, actions: actions)
             UIActivitySettingsSection(activity: activity)
-            moreSettingsToggle
-            if actions.moreSettingsOpen { moreSettings }
+            parent
         case .developer:
             if let tuning = actions.devTuning {
                 UIDeveloperSettingsSection(state: state, actions: actions, tuning: tuning)
@@ -1368,60 +1376,32 @@ struct UISettingsPanelView: View {
         }
     }
 
-    /// Settings-General board, verbatim.
-    static let moreTitle = "More settings"
-    static let moreCaption = "PIN, menu bar icon, remove"
+    /// "PARENT": the owner's choice among three General mockups (A,
+    /// 2026-10-20). The "More settings" fold and the separate Version,
+    /// Review Report and Remove cards became one card of three rows under
+    /// Recent activity, like it, so General has no fold: PIN, the diagnostic
+    /// report and Uninstall are always one tap away. Forgot PIN? moved into
+    /// the Enter PIN layer (`UIPinKeypadView`), the one place it is needed;
+    /// Version moved into the bottom row beside the wordmark
+    /// (`UIPopoverView.body`).
+    static let parentLabel = "Parent"
 
-    /// The fold's header: an outlined row with a chevron. Closed, it carries
-    /// the caption naming what is inside; open, only the title.
-    private var moreSettingsToggle: some View {
-        let open = actions.moreSettingsOpen
-        let toggle = { [actions] in actions.moreSettingsOpen.toggle() }
-        return Button(action: toggle) {
-            HStack(spacing: 10) {
-                Image(systemName: open ? "chevron.down" : "chevron.right")
-                    .uiFont(.caption, weight: .bold)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(Self.moreTitle).uiFont(.subheadline, weight: .semibold)
-                    if !open {
-                        Text(Self.moreCaption).uiFont(.caption).foregroundStyle(SentryColor.muted)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(SentryColor.ink)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(minHeight: open ? 40 : 46)
-            .contentShape(Rectangle())
-            .overlay(UIPopoverShape.hand(12, 10, 13, 9).strokeBorder(SentryColor.controlBorder, lineWidth: 2))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Self.moreTitle)
-        .accessibilityValue(open ? "Expanded" : "Collapsed")
-        .uiControl("ui.settings.more", kind: .button,
-            read: { [actions] in actions.moreSettingsOpen ? "open" : "closed" }, activate: toggle)
-    }
-
-    /// The old App page's rows, unchanged, under the fold.
-    @ViewBuilder private var moreSettings: some View {
+    private var parent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            UISettingsSectionLabel(text: Self.parentLabel)
             UISection(padding: 0) {
                 VStack(spacing: 0) {
                     changePIN
                     rowDivider
-                    forgotPIN
-                    rowDivider
-                    startAtLogin
-                    rowDivider
-                    showIcon
-                    rowDivider
-                    version
+                    diagnosticReport
+                    if state.isAdmin {
+                        rowDivider
+                        remove
+                    }
                 }
                 .padding(.vertical, 4)
             }
-            UIDiagnosticsSettingsSection(actions: actions)
-            remove
+        }
     }
 
     /// The page switcher, drawn as the Settings-General board draws it: an
@@ -1435,8 +1415,9 @@ struct UISettingsPanelView: View {
     private var tabs: some View {
         let sel = Binding<UISettingsTab>(
             get: { [actions, state] in actions.settingsTab ?? UISettingsTab.initial },
-            set: { [actions] in actions.settingsTab = $0 })
-        return UISettingsTabBar(selection: sel)
+            // Developer goes through the PIN (`showSettingsTab`).
+            set: { [actions] in actions.showSettingsTab($0) })
+        return UISettingsTabBar(selection: sel, developerLocked: !actions.developerUnlocked)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Self.tabPickerLabel)
         .uiControl("ui.settings.tab", kind: .picker,
@@ -1455,7 +1436,7 @@ struct UISettingsPanelView: View {
         Divider().padding(.leading, UIMetrics.sectionPadding)
     }
 
-    /// "Remove SentryScreen…" (SPEC §8.1(7); owner 2026-09-05).
+    /// "Uninstall…" (SPEC §8.1(7); owner 2026-09-05).
     ///
     /// ABSENT — not disabled — outside an administrator session. A disabled
     /// row advertises the removal to the child it is protecting the family
@@ -1463,244 +1444,74 @@ struct UISettingsPanelView: View {
     /// there says nothing. The same rule the status item itself follows
     /// (`main.swift`: a Standard session gets no status item at all).
     ///
-    /// Last in the sheet because it is the
-    /// end of the relationship with the app and nothing below it would be
-    /// read afterwards.
-    @ViewBuilder private var remove: some View {
-        if state.isAdmin {
-            UISection(padding: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    UIListRow(label: UninstallCopy.row) { actions.beginRemove() }
-                        .uiControl("ui.settings.remove", kind: .button,
-                            read: { UninstallCopy.row },
-                            activate: { actions.beginRemove() })
-                    Text(Self.removeCaption)
-                        .uiFont(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, UIMetrics.sectionPadding)
-                        .padding(.bottom, 8)
-                        .uiControl("ui.settings.remove.caption", kind: .text,
-                            read: { Self.removeCaption })
-                }
-                .padding(.vertical, 4)
-            }
-            .uiScrollAnchor("ui.settings.remove")
+    /// Last in the Parent card because it is the end of the relationship
+    /// with the app. Accent ink, and no caption: the confirmation card says
+    /// it needs an admin password (`UninstallCopy.body`), before anything
+    /// runs.
+    private var remove: some View {
+        UIListRow(label: UninstallCopy.row, symbol: Self.removeSymbol, tint: SentryColor.accent) {
+            actions.beginRemove()
         }
+        .uiControl("ui.settings.remove", kind: .button,
+            read: { UninstallCopy.row },
+            activate: { actions.beginRemove() })
+        .uiScrollAnchor("ui.settings.remove")
     }
 
     // MARK: Rows
 
+    /// "Set a PIN…" while there is none (`beginChangePin` then opens Set a
+    /// PIN), "Change PIN…" after. Same id either way.
     private var changePIN: some View {
-        UIListRow(label: Self.changePinLabel) { actions.beginChangePin() }
-            .uiControl("ui.settings.changepin", kind: .button, read: { Self.changePinLabel },
+        let label = actions.store.parentPIN == nil ? Self.setPinLabel : Self.changePinLabel
+        return UIListRow(label: label, symbol: Self.pinSymbol) { actions.beginChangePin() }
+            .uiControl("ui.settings.changepin", kind: .button,
+                read: { [actions] in actions.store.parentPIN == nil ? Self.setPinLabel : Self.changePinLabel },
                 activate: { actions.beginChangePin() })
     }
 
-    private var forgotPIN: some View {
-        HStack {
-            UIOnboardingForgotPINButton { actions.beginPINRecovery() }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Spec §9.4: NON-INTERACTIVE. A Toggle that cannot toggle would be a
-    /// lie, so this row states the fact and says who owns it — the same
-    /// shape macOS itself uses for a managed setting. Registered as `.text`
-    /// with `enabled: false`, which is what `assertenabled … false` reads.
-    private var startAtLogin: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text("Start at login")
-                    .uiFont(.callout)
-                Spacer(minLength: 8)
-                HStack(spacing: 4) {
-                    Image(systemName: UISymbol.managed)
-                        .uiFont(.caption, weight: .semibold)
-                        .accessibilityHidden(true)
-                    Text(Self.managedText)
-                }
-                .uiFont(.caption)
-                .foregroundStyle(.secondary)
+    /// What Review Report opened (the PIN, then the review), as a row. The
+    /// send outcome stays under it until the next review clears it: Close
+    /// leaves the review while a send can still be running or fail.
+    private var diagnosticReport: some View {
+        let sending = actions.diagnosticsSend == .sending
+        return VStack(alignment: .leading, spacing: 0) {
+            UIListRow(label: DiagnosticsCopy.review, isDisabled: sending, symbol: Self.reportSymbol) {
+                actions.reviewDiagnosticReport()
             }
-            Text(Self.startAtLoginCaption)
-                .uiFont(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .uiControl("ui.settings.startatlogin", kind: .text,
-            read: { "Start at login — " + Self.managedText },
-            enabled: { false })
-    }
-
-    /// Spec §9.4. The row is DISABLED when ⌘⌥⌃S did not register: the
-    /// confirmation's promise ("Press ⌘⌥⌃S to bring it back") is the only
-    /// reason hiding is offered at all, and `armRevealHotkey` is deliberately
-    /// non-fatal on a collision — so without this the parent hides the icon on
-    /// a promise the build cannot keep, and the only way back is a sudo
-    /// command named in a log they will never read. Disabled-with-a-reason
-    /// rather than alternate copy: `UIConfirm.hideIcon` stays the spec's
-    /// verbatim text, and the failure is stated where the decision is made.
-    ///
-    /// Only the hide direction is at stake, and it is the only reachable one:
-    /// the panel needs an icon to open, so `showMenuBarIcon` is always true
-    /// here.
-    private var showIcon: some View {
-        // One flag behind the SwiftUI `.disabled`, the caption and the
-        // registry's `enabled` closure — three mechanisms that drift the
-        // moment any of them derives the answer its own way.
-        let canHide = state.revealHotkeyArmed
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text("Show menu bar icon")
-                    .uiFont(.callout)
-                Spacer(minLength: 8)
-                Toggle("Show menu bar icon", isOn: Binding(
-                    get: { state.settings.showMenuBarIcon },
-                    set: { actions.setShowMenuBarIcon($0) }))
-                    // No mirror @State behind it: the binding reads the store's
-                    // value, so a cancelled confirmation snaps the switch back by
-                    // construction instead of needing an undo path.
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-                    .disabled(!canHide)
-            }
-            .frame(minHeight: UIMetrics.rowHeight(scale: textScale))
-            if !canHide {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Image(systemName: UISymbol.warning)
-                        .accessibilityHidden(true)
-                    Text(Self.noRevealHotkeyCaption)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .uiFont(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
-                // Its own id, like `ui.sensitivity.pinned`: the toggle's
-                // `read()` is "on"/"off" and must stay that, so the reason a
-                // control is disabled needs somewhere of its own to be
-                // asserted. Registered only while it is on screen.
-                .uiControl("ui.settings.showicon.nohotkey", kind: .text,
-                    read: { Self.noRevealHotkeyCaption })
+            .accessibilityIdentifier(UIDiagnosticsControlID.settingsReview)
+            .uiControl(UIDiagnosticsControlID.settingsReview, kind: .button,
+                read: { DiagnosticsCopy.review },
+                activate: { actions.reviewDiagnosticReport() },
+                enabled: { actions.diagnosticsSend != .sending })
+            if let send = actions.diagnosticsSend {
+                Text(DiagnosticsCopy.notice(for: send))
+                    .uiFont(.caption)
+                    .foregroundStyle(SentryColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, UIMetrics.sectionPadding + 26)
+                    .padding(.trailing, UIMetrics.sectionPadding)
+                    .padding(.bottom, 6)
+                    .uiControl(UIDiagnosticsControlID.settingsStatus, kind: .text,
+                        read: { actions.diagnosticsSend.map(DiagnosticsCopy.notice(for:)) ?? "" })
             }
         }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .uiControl("ui.settings.showicon", kind: .toggle,
-            read: { state.settings.showMenuBarIcon ? "on" : "off" },
-            activate: { actions.setShowMenuBarIcon(!state.settings.showMenuBarIcon) },
-            enabled: { state.revealHotkeyArmed })
-    }
-
-    /// Spec §9.4: the build, and nothing internal beside it. The model file
-    /// name and the state-root path were rows here until 2026-09-07 (owner):
-    /// they are developer facts, not parent facts.
-    private var version: some View {
-        HStack(spacing: 8) {
-            Text("Version")
-                .uiFont(.callout)
-            Spacer(minLength: 8)
-            Text(UIVersion.display)
-                .uiFont(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .frame(minHeight: UIMetrics.rowHeight(scale: textScale))
-        .accessibilityElement(children: .combine)
-        .uiControl("ui.settings.version", kind: .text,
-            read: { UIVersion.display })
+        .uiScrollAnchor(UIDiagnosticsControlID.settingsReview)
     }
 
     static let changePinLabel = "Change PIN…"
-    /// Spec §9.4, verbatim.
-    static let managedText = "Managed by the system"
-    static let startAtLoginCaption = "SentryScreen is installed as a system LaunchAgent and "
-        + "starts for every user at login. Removing it requires an administrator."
-    /// Why hiding is unavailable. Names the cause (the key is taken) and the
-    /// consequence (there would be no way back), which is exactly what the
-    /// confirmation would otherwise have promised.
-    /// `UIConfirm.revealKeys`, not `HotkeyCenter.revealKey.label`
-    /// ("Cmd+Opt+Ctrl+S"): that label is the log's spelling, and this line
-    /// has to read as the same key the confirmation names.
-    /// Says what a parent needs before they press: the Mac's password, not the PIN.
-    static let removeCaption = "Removing SentryScreen needs an administrator name and password."
-
-    static let noRevealHotkeyCaption = "Another app owns \(UIConfirm.revealKeys), so a hidden icon could not be "
-        + "brought back. Hiding is unavailable until that key is free."
+    static let setPinLabel = "Set a PIN…"
+    static let pinSymbol = "lock"
+    static let reportSymbol = "doc.text"
+    static let removeSymbol = "trash"
 }
 
 // MARK: - Confirmation (spec §9.4 hide icon, §9.5 turn off)
 
-/// One card for every destructive confirmation (Settings-Confirm board, with
-/// the owner's revisions): the red mark and the title on ONE line, the spec's
-/// copy under it split the way an NSAlert splits it, then Cancel and a red
-/// confirm, centred. Deliberately NOT given `.defaultAction`: Return should
-/// not be able to turn protection off. The card says nothing about the PIN
-/// (owner revision: no "Asks for your PIN"); the PIN layer that follows says
-/// what it is for.
-///
-/// The copy is UNCHANGED from `UIConfirm` (spec §9.4/§9.5 verbatim). The
-/// board words some cards differently ("Hide the menu bar icon?", "Deactivate
-/// this Mac?"); only the layout was approved, so those wordings are open
-/// decisions, not edits made here.
-struct UIConfirmView: View {
-    @ObservedObject var actions: UIActions
-    let spec: UIConfirm
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 12) {
-                UISettingsConfirmMark(symbol: spec.symbol)
-                Text(spec.title)
-                    .uiFont(.headline)
-                    .foregroundStyle(SentryColor.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            Text(spec.body)
-                .uiFont(.callout)
-                .foregroundStyle(SentryColor.ink2)
-                .fixedSize(horizontal: false, vertical: true)
-                // Reads the WHOLE copy, title included: the assert that
-                // guards this text must fail if either half drifts from
-                // the spec.
-                .uiControl(spec.noteID, kind: .text, read: { spec.copy })
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                Button("Cancel") { actions.cancelConfirm() }
-                    .buttonStyle(UISettingsOutlineButtonStyle(
-                        minHeight: UISettingsLook.doneHeight, horizontalPadding: 16))
-                    .keyboardShortcut(.cancelAction)
-                    .uiControl(spec.cancelID, kind: .button, read: { "Cancel" },
-                        activate: { actions.cancelConfirm() })
-                Button(spec.confirmLabel) { actions.acceptConfirm() }
-                    .buttonStyle(UISettingsDangerButtonStyle())
-                    .uiControl(spec.confirmID, kind: .button, read: { spec.confirmLabel },
-                        activate: { actions.acceptConfirm() })
-                Spacer(minLength: 0)
-            }
-            // The confirm button's offset shadow is drawn outside its frame.
-            .padding(.trailing, UISettingsLook.shadowRoom.width)
-            .padding(.bottom, UISettingsLook.shadowRoom.height)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(spec.copy)
-    }
-}
-
 // MARK: - Removal confirmation (SPEC §8.1(7))
 
-/// The one card between "Remove SentryScreen…" and the administrator prompt.
-/// Same shape as `UIConfirmView` — red glyph, the copy, Cancel and a red
-/// confirm — plus the two questions `packaging/uninstall.sh` accepts, and the
+/// The one card between "Uninstall…" and the administrator prompt.
+/// A red glyph, the copy, Cancel and a red confirm, plus the two questions `packaging/uninstall.sh` accepts, and the
 /// closing line that must be on screen BEFORE the script boots this agent out.
 struct UIRemoveView: View {
     @ObservedObject var actions: UIActions
@@ -1721,7 +1532,7 @@ struct UIRemoveView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Same head as `UIConfirmView` (review 2026-09-29, item 11): the
+            // The confirmation card's head (review 2026-09-29, item 11): the
             // site danger mark, not systemRed.
             HStack(alignment: .center, spacing: 12) {
                 UISettingsConfirmMark(symbol: UISymbol.remove)
@@ -1905,13 +1716,17 @@ extension PolicyMode {
 /// segments, hand-cut radii 11/9/12/9 outside and 8/7/8/6 inside.
 private struct UISettingsTabBar: View {
     @Binding var selection: UISettingsTab
+    /// A small lock on Developer until the PIN opens it.
+    var developerLocked = false
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(UISettingsTab.allCases, id: \.self) { tab in
                 let on = tab == selection
                 Button { selection = tab } label: {
-                    Text(tab.label)
+                    (tab == .developer && developerLocked
+                        ? Text(Image(systemName: "lock.fill")).font(.caption2) + Text(" " + tab.label)
+                        : Text(tab.label))
                         .uiFont(.callout)
                         .fontWeight(.semibold)
                         // Shrink before wrapping, never truncate (no lineLimit):

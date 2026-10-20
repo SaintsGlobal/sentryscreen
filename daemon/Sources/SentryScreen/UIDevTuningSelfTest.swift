@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // `--ui-selftest` group "devtab" (UIDevTuning.swift): the Settings ›
@@ -127,6 +128,13 @@ extension UISelfTest {
         model.reset()
         check("devtab: reset removes the file, draft = launch policy, stamp = none",
             !fm.fileExists(atPath: path) && model.draft == base && model.applied == .none(source: "defaults") && model.writeError == nil)
+        check("devtab: Reset to shipped defaults lands on the 2026-10-20 floors and zoomTiles on",
+            model.draft.rule(for: "FEMALE_BREAST_EXPOSED")?.threshold == 0.9
+                && model.draft.rule(for: "FEMALE_GENITALIA_EXPOSED")?.threshold == 0.7
+                && model.draft.rule(for: "MALE_GENITALIA_EXPOSED")?.threshold == 0.9
+                && model.draft.rule(for: "BUTTOCKS_EXPOSED")?.threshold == 0.8
+                && model.draft.rule(for: "ANUS_EXPOSED")?.threshold == 0.7
+                && model.draft.coveredBeatsExposed && model.draft.coveredOverlap == 0.9 && model.draft.zoomTiles)
         model.reset()
         check("devtab: reset with no file is not an error", model.writeError == nil)
         model.noteOutcome(.absent)
@@ -171,6 +179,54 @@ extension UISelfTest {
         check("devtab: correct PIN ⇒ reset ran, file gone, sheet back",
             !fm.fileExists(atPath: storeRoot + "/parent/tuning.json") && actions.layer == .settings, "\(actions.layer)")
 
+        // --- 5b. the Developer tab itself is behind the PIN (owner 2026-10-20) ---
+        actions.lock()
+        actions.openSettings()
+        actions.showSettingsTab(.developer)
+        check("devtab: locked ⇒ tapping Developer asks for the PIN and stays on General",
+            actions.layer == .pin && actions.pendingConfirmation == UIActions.developerPin
+                && actions.settingsTab != .developer && !actions.developerUnlocked,
+            "\(actions.layer) \(String(describing: actions.settingsTab))")
+        actions.pinEntry = "0000"
+        actions.submitPIN()
+        spin(until: { !actions.busy })
+        let wrongStays = actions.settingsTab != .developer && !actions.developerUnlocked
+        actions.cancelLayer()
+        check("devtab: a wrong PIN, then Cancel ⇒ back on the sheet, still General, still locked",
+            wrongStays && actions.layer == .settings && actions.settingsTab != .developer && !actions.developerUnlocked,
+            "\(actions.layer) \(String(describing: actions.settingsTab))")
+        actions.showSettingsTab(.developer)
+        actions.pinEntry = "4821"
+        actions.submitPIN()
+        spin(until: { !actions.busy })
+        check("devtab: the right PIN ⇒ the Developer tab shows, unlocked",
+            actions.layer == .settings && actions.settingsTab == .developer && actions.developerUnlocked,
+            "\(actions.layer) \(String(describing: actions.settingsTab))")
+        gated.setClass("ANUS_EXPOSED") { $0.entryFrames = 4 }
+        actions.commitDevTuning()
+        check("devtab: unlocked, a change on the tab applies without asking again",
+            actions.layer == .settings && fm.fileExists(atPath: storeRoot + "/parent/tuning.json"), "\(actions.layer)")
+        actions.showSettingsTab(.general)
+        actions.showSettingsTab(.developer)
+        check("devtab: General and back to Developer does not ask again", actions.settingsTab == .developer
+            && actions.layer == .settings)
+        actions.resetDevTuning()
+        actions.lock()
+        actions.openSettings()
+        check("devtab: the popover closing locks the tab again", !actions.developerUnlocked)
+        actions.showSettingsTab(.developer)
+        check("devtab: … and Developer asks for the PIN again", actions.layer == .pin && actions.settingsTab != .developer)
+        actions.lock()
+        let bareRoot = dir + "/store-nopin"
+        try? fm.removeItem(atPath: bareRoot)
+        try! fm.createDirectory(atPath: bareRoot, withIntermediateDirectories: true)
+        let bare = UIActions(store: UISettingsStore(root: bareRoot, log: { _, _ in }), log: { _, _ in })
+        bare.openSettings()
+        bare.showSettingsTab(.developer)
+        check("devtab: with no PIN set, Developer asks to set one first",
+            bare.layer == .setPin && bare.settingsTab != .developer, "\(bare.layer)")
+        try? fm.removeItem(atPath: bareRoot)
+
         // --- 6. the readout fills from injected events ---
         let readout = TuningReadout()
         let now: Double = 1000
@@ -178,9 +234,11 @@ extension UISelfTest {
         policy.standard["MALE_GENITALIA_EXPOSED"]?.minBoxPt = 24
         policy.coveredBeatsExposed = true
         let screen = CGSize(width: 1920, height: 1080)
-        let small = Detection(label: "MALE_GENITALIA_EXPOSED", confidence: 0.62, box: CGRect(x: 0.4, y: 0.5, width: 0.01, height: 0.03))
+        // Scores sit above the shipped floors (2026-10-20: MGE 0.90, BE 0.80,
+        // FBE 0.90) so each box reaches the rule the case is about.
+        let small = Detection(label: "MALE_GENITALIA_EXPOSED", confidence: 0.93, box: CGRect(x: 0.4, y: 0.5, width: 0.01, height: 0.03))
         let big = Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.84, box: CGRect(x: 0.5, y: 0.4, width: 0.2, height: 0.3))
-        let exposed = Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.71, box: CGRect(x: 0.30, y: 0.30, width: 0.05, height: 0.08))
+        let exposed = Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.93, box: CGRect(x: 0.30, y: 0.30, width: 0.05, height: 0.08))
         let covered = Detection(label: "FEMALE_BREAST_COVERED", confidence: 0.66, box: CGRect(x: 0.28, y: 0.28, width: 0.12, height: 0.16))
         let inject = Detection(label: TuningPolicy.injectLabel, confidence: 1, box: CGRect(x: 0, y: 0, width: 0.5, height: 0.5))
         let face = Detection(label: "FACE_FEMALE", confidence: 0.9, box: CGRect(x: 0, y: 0, width: 0.1, height: 0.1))
@@ -196,7 +254,7 @@ extension UISelfTest {
         }
         feed([big, exposed, covered, inject, face, small], blockFaces: true, at: now - 5)
         feed([big], at: now - 2)
-        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.55, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))], at: now - 1)
+        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.82, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))], at: now - 1)
         // Outside the window: must not count.
         feed([big, small], at: now - 61)
         readout.recordCurtain(action: "lift (hold)", windowID: 7, app: "Safari", now: now - 70)
@@ -223,7 +281,8 @@ extension UISelfTest {
             "\(String(describing: s.lastDrop))")
         check("devtab: readout lines carry the numbers",
             UIDeveloperSettingsSection.classLine(b!) == "BUTTOCKS_EXPOSED: 3 hits, 108–324 pt, max conf 0.84"
-                && UIDeveloperSettingsSection.dropLine(s).hasPrefix("Last curtain drop: drop (parole) window 9 app=Safari")
+                && UIDeveloperSettingsSection.dropLine(s).hasPrefix("Last curtain drop: Safari · ")
+                && UIDeveloperSettingsSection.dropLine(s).hasSuffix(" (drop (parole), window 9)")
                 && UIDeveloperSettingsSection.suppressedLine(s).hasPrefix(
                     "Suppressed: min box 1, covered-beats-exposed 1, threshold step 0 — last: min box"),
             UIDeveloperSettingsSection.suppressedLine(s))
@@ -286,15 +345,15 @@ extension UISelfTest {
         let a = stepReadout.snapshot(now: now)
         check("devtab: the readout names the step that cut a box — side, floor, the step's boundary and the base it replaced",
             a.lastSuppression?.rule == .thresholdStep
-                && a.lastSuppression?.detail == "BUTTOCKS_EXPOSED 324 pt conf 0.84 < 0.90 (step ≥ 128 pt; base 0.50)"
+                && a.lastSuppression?.detail == "BUTTOCKS_EXPOSED 324 pt conf 0.84 < 0.90 (step ≥ 128 pt; base 0.80)"
                 && a.stepBoxesCut == 1 && a.stepFramesEmptied == 0 && a.blockedFrames == 1,
             "\(String(describing: a.lastSuppression)) cut=\(a.stepBoxesCut) emptied=\(a.stepFramesEmptied) blocked=\(a.blockedFrames)")
         // Frame B: the same box alone ⇒ the frame is EMPTIED (the only
         // outcome that can move a curtain drop).
         feed([big], stepReadout, policy: stepPolicy, at: now + 1)
         // Frame C: a 108-pt BUTTOCKS box is BELOW the boundary, so the base
-        // 0.50 applies and 0.55 still blocks — no cut.
-        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.55, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))],
+        // 0.80 applies and 0.82 still blocks — no cut.
+        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.82, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))],
             stepReadout, policy: stepPolicy, at: now + 2)
         // Frame D: the 19.2-pt MALE box is removed by minBoxPt 24. It is over
         // the 16-pt step and under its 0.95 floor, so ONLY the ordering keeps
@@ -316,6 +375,8 @@ extension UISelfTest {
             UIDeveloperSettingsSection.suppressedLine(st)
                 .hasPrefix("Suppressed: min box 1, covered-beats-exposed 0, threshold step 2 — last: min box"),
             UIDeveloperSettingsSection.suppressedLine(st))
+        check("devtab: the Details title totals the three rules' removals",
+            UIDeveloperSettingsSection.detailsTitle(st) == "Removed by rules: 3", UIDeveloperSettingsSection.detailsTitle(st))
         // An unmeasured screen (--replay) falls back to the flat threshold:
         // the box blocks, nothing is cut, and no step is named.
         feed([big], stepReadout, policy: stepPolicy, screen: .zero, at: now + 4)
@@ -324,6 +385,8 @@ extension UISelfTest {
             unmeasured.stepBoxesCut == 2 && unmeasured.blockedFrames == 4
                 && unmeasured.lastSuppression?.rule == .minBox,
             "cut=\(unmeasured.stepBoxesCut) blocked=\(unmeasured.blockedFrames)")
+
+        caseDeveloperTabTrackRows(root: root, base: base)
 
         // --- 7. the model's tick publishes the snapshot; reset clears it ---
         let live = UIDevTuning(stateRoot: root, groupID: getegid(), base: base, baseSource: "defaults", readout: readout)
@@ -339,7 +402,7 @@ extension UISelfTest {
         p.curtain.windowSecs = 2.5
         check("devtab: UIDeveloperSettingsSection.current maps every slider id to its draft field",
             UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.minBoxPt", in: p) == 12
-                && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.threshold", in: p) == 0.5
+                && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.threshold", in: p) == Double(Float(0.7))
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.entryFrames", in: p) == 2
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.coveredOverlap", in: p) == base.coveredOverlap
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.curtain.triggerHits", in: p) == 3
@@ -350,6 +413,238 @@ extension UISelfTest {
                 // answer for it — its row's own `read` closure does
                 // (`UIDeveloperSettingsSection.stepsRow`).
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.thresholdSteps", in: p) == nil)
+
+        // --- 8b. a closed class names what it hides that differs from Reset ---
+        let baseAE = base.rule(for: "ANUS_EXPOSED")
+        var ae = baseAE ?? TuningPolicy.ClassRule(threshold: 0.7)
+        check("devtab: a closed class at Reset's values shows no changed line",
+            UIDeveloperSettingsSection.closedSummary(ae, base: baseAE) == nil)
+        ae.minBoxPt = 12
+        ae.entryFrames += 1
+        ae.thresholdSteps = [.init(minPt: 64, threshold: 0.9)]
+        let summary = UIDeveloperSettingsSection.closedSummary(ae, base: baseAE)
+        check("devtab: a closed class names its changed steps, minBoxPt and entryFrames",
+            summary == "Changed: steps 64:0.90 · minBoxPt 12 · entryFrames \(ae.entryFrames)", summary ?? "nil")
+
+        // --- 8c. the readout records only in its window after the tab was seen ---
+        let win = TuningReadout()
+        let neverOpened = !win.isActive(now: 1000)
+        win.keepActive(now: 1000)
+        check("devtab: the readout records only while the tab is open and for activeTailSecs after",
+            neverOpened && win.isActive(now: 1000 + TuningReadout.activeTailSecs - 1)
+                && !win.isActive(now: 1000 + TuningReadout.activeTailSecs))
         try? fm.removeItem(atPath: dir)
+    }
+
+    /// --- 6c. "Last 60 s" rows (2026-10-20): one row per track, ranked by
+    /// decayed peak, ✓ from the curtain's drop indices, near misses, the
+    /// track cap, and the freeze timeout. Synthetic detections only.
+    private static func caseDeveloperTabTrackRows(root: String, base shipped: TuningPolicy) {
+        // Floors pinned to 0.5 HERE: these cases test the rows, not the
+        // shipped floors, so they must not move when the defaults do.
+        var base = shipped
+        for l in TuningPolicy.exposedLabels { base.standard[l]?.threshold = 0.5 }
+        let screen = CGSize(width: 1920, height: 1080)
+        func det(_ l: String, _ c: Float, x: CGFloat, y: CGFloat, w: CGFloat = 0.06, h: CGFloat = 0.1) -> Detection {
+            Detection(label: l, confidence: c, box: CGRect(x: x, y: y, width: w, height: h))
+        }
+        func feed(
+            _ r: TuningReadout, _ raw: [Detection], policy p: TuningPolicy = base, at: Double,
+            windows: [Int: CGWindowID] = [:], drops: [TuningReadout.Drop] = [], blockedCount: Int? = nil
+        ) {
+            let f = p.filter(raw, mode: .standard, blockFaces: false, screen: screen)
+            r.record(
+                raw: raw, filtered: f, tuning: p, mode: .standard, blockFaces: false, screen: screen, now: at,
+                blockedCount: blockedCount ?? f.blocked.count, windows: windows, drops: drops,
+                appName: { $0 == 7 ? "Safari" : ($0 == 9 ? "Preview" : nil) })
+        }
+        let fbeFloor = base.standard["FEMALE_BREAST_EXPOSED"]!.threshold
+        let mgeFloor = base.standard["MALE_GENITALIA_EXPOSED"]!.threshold
+        let r = TuningReadout()
+        var limits: [String] = []
+        r.onLimit = { limits.append($0) }
+        let t0: Double = 5000
+        // A blocked FBE credited to window 7 (blocked index 0), a blocked BE
+        // nobody credited, and an MGE 0.03 under its floor.
+        let fbe = det("FEMALE_BREAST_EXPOSED", fbeFloor + 0.30, x: 0.10, y: 0.70)
+        let be = det("BUTTOCKS_EXPOSED", 0.60, x: 0.60, y: 0.70)
+        let mge = det("MALE_GENITALIA_EXPOSED", mgeFloor - 0.03, x: 0.60, y: 0.10)
+        feed(r, [fbe, be, mge], at: t0, windows: [0: 7])
+        var s = r.snapshot(now: t0)
+        check("rows: one row per track, ranked by peak at age 0 (FBE, BE, then the MGE near miss)",
+            s.rows.map(\.code) == ["FBE", "BE", "MGE"], "\(s.rows.map(\.code))")
+        let fbeRow = s.rows.first { $0.code == "FBE" }
+        check("rows: the credited FBE row carries window 7, its app, size, floor and status ◼",
+            fbeRow?.windowID == 7 && fbeRow?.app == "Safari" && fbeRow?.status == .covered
+                && fbeRow?.floor == fbeFloor && fbeRow?.sidePt == 108, "\(String(describing: fbeRow))")
+        let mgeRow = s.rows.first { $0.code == "MGE" }
+        check("rows: a peak within TuningReadout.nearMissBand (0.05) under its floor is a near miss, status ○",
+            mgeRow?.nearMiss == true && mgeRow?.status == .below && fbeRow?.nearMiss == false
+                && TuningReadout.nearMissBand == 0.05)
+        check("rows: the row text reads symbol, code, \"peak · floor\", size, app, age",
+            fbeRow.map(UIDeveloperSettingsSection.rowLine)
+                == "◼ FBE \(TuningReadout.conf(fbeFloor + 0.30)) · floor \(TuningReadout.conf(fbeFloor)) 108 pt Safari 0 s — covered",
+            fbeRow.map(UIDeveloperSettingsSection.rowLine) ?? "nil")
+        // The same subject next frame, walk skipped (no credit): it joins the
+        // credited track instead of starting a window-less one.
+        feed(r, [det("FEMALE_BREAST_EXPOSED", fbeFloor + 0.35, x: 0.11, y: 0.70)], at: t0 + 1)
+        s = r.snapshot(now: t0 + 1)
+        let joined = s.rows.filter { $0.code == "FBE" }
+        check("rows: an uncredited box joins its label's track in the same cell (one row, 2 hits, window kept, peak raised)",
+            joined.count == 1 && joined[0].hits == 2 && joined[0].windowID == 7
+                && joined[0].peak == fbeFloor + 0.35 && joined[0].latest == fbeFloor + 0.35, "\(joined)")
+        // DECAY: a fresh weaker box outranks an older stronger one.
+        feed(r, [det("FEMALE_GENITALIA_EXPOSED", 0.80, x: 0.35, y: 0.40)], at: t0 + 11)
+        s = r.snapshot(now: t0 + 11)
+        let expectFBE = Double(fbeFloor + 0.35) * pow(0.5, 10 / TuningReadout.rankHalfLifeSecs)
+        let fbeNow = s.rows.first { $0.code == "FBE" }
+        check("rows: rank = peak × 0.5^(age / 15 s) (TuningReadout.rankHalfLifeSecs)",
+            TuningReadout.rankHalfLifeSecs == 15 && fbeNow.map { abs($0.rank - expectFBE) < 1e-6 } == true
+                && fbeNow?.ageSecs == 10, "\(String(describing: fbeNow?.rank)) vs \(expectFBE)")
+        check("rows: decay re-ranks — the fresh FGE 0.80 sits above the 10 s old FBE",
+            s.rows.first?.code == "FGE" && s.rows.firstIndex { $0.code == "FGE" }! < s.rows.firstIndex { $0.code == "FBE" }!,
+            "\(s.rows.map { "\($0.code) \($0.rank)" })")
+        check("rows: ranking happens in the snapshot (the 1 Hz tick), and a row ages out 60 s after its last hit",
+            r.snapshot(now: t0 + 61).rows.map(\.code) == ["FGE", "FBE"]
+                && r.snapshot(now: t0 + 72).rows.isEmpty,
+            "\(r.snapshot(now: t0 + 61).rows.map(\.code))")
+
+        // ✓ ATTRIBUTION: drop indices point into the BLOCKED list; only the
+        // tracks behind those boxes get the mark.
+        let cr = TuningReadout()
+        let a = det("BUTTOCKS_EXPOSED", 0.70, x: 0.10, y: 0.10)
+        let below = det("ANUS_EXPOSED", 0.20, x: 0.40, y: 0.40)  // not blocked: no blocked index
+        let b = det("FEMALE_BREAST_EXPOSED", 0.90, x: 0.70, y: 0.70)
+        feed(cr, [a, below, b], at: t0, windows: [0: 9, 1: 7], drops: [TuningReadout.Drop(windowID: 7, indices: [1])])
+        let cs = cr.snapshot(now: t0)
+        let bRow = cs.rows.first { $0.code == "FBE" }, aRow = cs.rows.first { $0.code == "BE" }
+        check("rows: ✓ goes to the track behind the drop's blocked index (raw 2 = blocked 1), not its neighbour",
+            bRow?.status == .curtain && bRow?.windowID == 7 && aRow?.status == .covered && aRow?.windowID == 9
+                && aRow?.app == "Preview" && cs.rows.first { $0.code == "AE" }?.status == .below,
+            "\(cs.rows.map { "\($0.code) \($0.status) \(String(describing: $0.windowID))" })")
+        feed(cr, [b], at: t0 + 1, windows: [0: 7])
+        check("rows: ✓ is sticky for the track's life (a later plain hit keeps it)",
+            cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }?.status == .curtain)
+        check("rows: the ✓ row reads \"curtain dropped\"",
+            UIDeveloperSettingsSection.rowLine(cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }!)
+                .hasPrefix("✓ FBE 0.90 · floor 0.50 ") == true)
+        // covered-beats-exposed under Strict: the exposed row is covered at
+        // the COVERED floor, and says so (owner 2026-10-20).
+        do {
+            let jr = TuningReadout()
+            var strict = base
+            strict.coveredBeatsExposed = true
+            let screen = CGSize(width: 1920, height: 1080)
+            let raw = [
+                Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.71,
+                    box: CGRect(x: 0.30, y: 0.30, width: 0.05, height: 0.08)),
+                Detection(label: "FEMALE_BREAST_COVERED", confidence: 0.66,
+                    box: CGRect(x: 0.28, y: 0.28, width: 0.12, height: 0.16)),
+            ]
+            let f = strict.filter(raw, mode: .strict, blockFaces: false, screen: screen)
+            jr.record(raw: raw, filtered: f, tuning: strict, mode: .strict, blockFaces: false,
+                screen: screen, now: t0)
+            let row = jr.snapshot(now: t0).rows.first { $0.code == "FBE" }
+            check("rows: a relabelled exposed box says it was judged as covered",
+                row?.judgedAs == "FEMALE_BREAST_COVERED"
+                    && row.map { UIDeveloperSettingsSection.scoreText($0).contains("covered floor") } == true
+                    && row.map { UIDeveloperSettingsSection.statusText($0) } == "covered as FEMALE_BREAST_COVERED (covered-beats-exposed)",
+                row.map { UIDeveloperSettingsSection.rowLine($0) } ?? "no FBE row")
+            let plain = jr.snapshot(now: t0).rows.first { $0.code == "FBC" }
+            check("rows: a plain covered row keeps \"floor\"",
+                plain.map { UIDeveloperSettingsSection.scoreText($0).contains(" · floor ") } == true && plain?.judgedAs == nil)
+            check("rows: on the tab line 1 ends in the peak alone and line 2 starts with the floor",
+                row.map { UIDeveloperSettingsSection.peakText($0) == TuningReadout.conf($0.peak) || UIDeveloperSettingsSection.peakText($0).contains("(latest ") } == true
+                    && row.map { UIDeveloperSettingsSection.floorMetaText($0).hasPrefix("covered floor 0.60 · ") } == true
+                    && plain.map { UIDeveloperSettingsSection.floorMetaText($0).hasPrefix("floor ") } == true,
+                (row.map { UIDeveloperSettingsSection.floorMetaText($0) } ?? "no FBE row") + " | "
+                    + (plain.map { UIDeveloperSettingsSection.floorMetaText($0) } ?? "no FBC row"))
+        }
+        if let aRow {
+            let meta = UIDeveloperSettingsSection.metaText(aRow)
+            check("rows: the second line is size · app · age",
+                meta.hasSuffix(" · Preview · 0 s") && meta.hasSuffix("pt · Preview · 0 s"), meta)
+        }
+
+        // ⊘: which rule removed the box.
+        let rr = TuningReadout()
+        var ruled = base
+        ruled.standard["MALE_GENITALIA_EXPOSED"]?.minBoxPt = 24
+        ruled.standard["BUTTOCKS_EXPOSED"]?.thresholdSteps = [.init(minPt: 128, threshold: 0.9)]
+        feed(rr, [
+            det("MALE_GENITALIA_EXPOSED", 0.9, x: 0.10, y: 0.10, w: 0.01, h: 0.01),
+            det("FEMALE_BREAST_EXPOSED", 0.9, x: 0.31, y: 0.31, w: 0.04, h: 0.06),
+            det("FEMALE_BREAST_COVERED", 0.7, x: 0.28, y: 0.28, w: 0.12, h: 0.16),
+            det("BUTTOCKS_EXPOSED", 0.8, x: 0.60, y: 0.40, w: 0.2, h: 0.3),
+        ], policy: ruled, at: t0)
+        let rules = Dictionary(uniqueKeysWithValues: rr.snapshot(now: t0).rows.map { ($0.code, $0.status) })
+        // Both size floors set: a box the fraction cut names the fraction.
+        let fracR = TuningReadout()
+        var both = base
+        both.standard["MALE_GENITALIA_EXPOSED"]?.minBoxPt = 4
+        both.standard["MALE_GENITALIA_EXPOSED"]?.minBoxFraction = 0.01
+        feed(fracR, [det("MALE_GENITALIA_EXPOSED", 0.95, x: 0.10, y: 0.10, w: 0.05, h: 0.05)], policy: both, at: t0)
+        let frRule = fracR.snapshot(now: t0).rows.first?.status
+        check("rows: ⊘ names minBoxFraction when the fraction cut, even with minBoxPt set",
+            frRule == .removed("minBoxFraction"), "\(String(describing: frRule))")
+        check("rows: ⊘ names the rule — minBoxPt, covered-beats-exposed, size step; a covered class off under Standard has no row",
+            rules["MGE"] == .removed("minBoxPt") && rules["FBE"] == .removed("covered-beats-exposed")
+                && rules["BE"] == .removed("size step") && rules["FBC"] == nil, "\(rules)")
+
+        // A mirror that disagrees with the pipeline is counted and said once.
+        let mr = TuningReadout()
+        var mlines: [String] = []
+        mr.onLimit = { mlines.append($0) }
+        feed(mr, [b], at: t0, windows: [0: 7], blockedCount: 2)
+        feed(mr, [b], at: t0 + 1, windows: [0: 7], blockedCount: 2)
+        let ms = mr.snapshot(now: t0 + 1)
+        check("rows: a policy-mirror mismatch drops window and ✓ for the frame, counts it, logs once",
+            ms.attributionSkipped == 2 && ms.rows.first?.windowID == nil && ms.rows.first?.hits == 2
+                && mlines.count == 1 && mlines[0].contains("TuningReadout.record"), "\(mlines)")
+
+        // TRACK CAP: one past the cap evicts the lowest-ranked row, counted and logged.
+        let capped = TuningReadout()
+        var clines: [String] = []
+        capped.onLimit = { clines.append($0) }
+        for i in 0...TuningReadout.trackCapacity {
+            feed(capped, [det("FEMALE_BREAST_EXPOSED", i == 0 ? 0.55 : 0.95, x: 0.5, y: 0.5)],
+                at: t0 + Double(i) * 0.001, windows: [0: CGWindowID(100 + i)])
+        }
+        let caps = capped.snapshot(now: t0 + 1)
+        check("rows: past TuningReadout.trackCapacity (512) the lowest-ranked row is evicted, counted and logged by name",
+            TuningReadout.trackCapacity == 512 && caps.rows.count == TuningReadout.trackCapacity
+                && caps.tracksEvicted == 1 && !caps.rows.contains { $0.windowID == 100 }
+                && clines.count == 1 && clines[0].contains("TuningReadout.trackCapacity configured=512"),
+            "rows=\(caps.rows.count) evicted=\(caps.tracksEvicted) \(clines)")
+        check("rows: the eviction is said on the tab", UIDeveloperSettingsSection.tracksEvictedLine(caps).contains("1 rows evicted"))
+
+        // FREEZE: rows stop moving; after `freezeSecs` the freeze ends by itself.
+        let fr = TuningReadout()
+        let model = UIDevTuning(stateRoot: root, groupID: getegid(), base: base, baseSource: "defaults", readout: fr)
+        feed(fr, [fbe], at: t0, windows: [0: 7])
+        model.tick(now: t0)
+        model.freeze(now: t0)
+        feed(fr, [det("ANUS_EXPOSED", 0.99, x: 0.8, y: 0.2)], at: t0 + 1)
+        model.tick(now: t0 + 1)
+        let frozenRows = model.snapshot.rows.map(\.id)
+        check("rows: Freeze holds the rows (no new row, no re-rank) while the footer stays live",
+            model.frozenAt == t0 && frozenRows.count == 1 && model.freezeRemaining(now: t0 + 1) == 29)
+        model.tick(now: t0 + UIDevTuning.freezeSecs - 0.5)
+        check("rows: still frozen just before UIDevTuning.freezeSecs (30 s)",
+            model.frozenAt != nil && model.snapshot.rows.count == 1 && UIDevTuning.freezeSecs == 30)
+        model.tick(now: t0 + UIDevTuning.freezeSecs)
+        check("rows: the freeze ends by itself at 30 s and the rows re-rank (the new AE 0.99 on top)",
+            model.frozenAt == nil && model.snapshot.rows.first?.code == "AE" && model.snapshot.rows.count == 2,
+            "\(model.snapshot.rows.map(\.code))")
+        model.freeze(now: t0 + 31)
+        model.clearReadout(now: t0 + 31)
+        check("rows: Clear empties the rows and ends a freeze", model.snapshot.rows.isEmpty && model.frozenAt == nil)
+        // Copy: every row plus the footer; labels, numbers and app names only.
+        feed(fr, [fbe, mge], at: t0 + 40, windows: [0: 7])
+        model.tick(now: t0 + 40)
+        let text = UIDeveloperSettingsSection.readoutText(model.snapshot)
+        check("rows: Copy readout carries every row (full label, window, hits) and the footer lines",
+            text.contains("FEMALE_BREAST_EXPOSED, window 7, 1 hits") && text.contains("near miss")
+                && text.contains("Last curtain drop:") && text.contains("Threshold steps:"), text)
     }
 }

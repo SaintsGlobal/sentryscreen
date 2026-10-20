@@ -317,7 +317,7 @@ final class UIOnboardingPresentation: ObservableObject {
     /// built ONCE and reused for the whole session — a published property
     /// re-renders it, a static read would not.
     @Published var textScale: CGFloat = UITextScale.standard
-    /// Draws the "Uninstall SentryScreen…" link. Set by the runtime when an
+    /// Draws the "Uninstall…" link. Set by the runtime when an
     /// administrator session wires the removal path.
     @Published var uninstallAvailable = false
     /// The card's Close button → the controller's performClose, so the one

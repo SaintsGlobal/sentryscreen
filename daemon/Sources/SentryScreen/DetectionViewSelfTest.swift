@@ -781,6 +781,14 @@ extension UISelfTest {
         check("layout: 30 labels on one spot are spread out with leader lines; any that cannot fit are counted",
             C.items.filter { $0.chip.leader != nil }.count > 0 && (coOverlaps == 0 || C.crowded > 0),
             "overlaps=\(coOverlaps) crowded=\(C.crowded)")
+        // Owner 2026-10-20: a drawn box always has a label, whatever its
+        // score or decision, crowded or not.
+        let unlabelled = (L.items + C.items).filter { item in
+            guard case .box = item.kind else { return false }
+            return !item.chipShown || item.chip.lines.first?.isEmpty != false || !screen.contains(item.chip.frame)
+        }.count
+        check("labels: every drawn box has a shown, non-empty label on screen (fixed and crowded traces)",
+            unlabelled == 0, "unlabelled=\(unlabelled)")
 
         // Render cost (the renderBudgetMs receipt's measurement).
         var stress: [DetectionTrace.Box] = []
@@ -899,11 +907,13 @@ extension UISelfTest {
                 && hoverChip?.chip == on.items.first { $0.kind == .box(index: 0) }?.chip)
 
         // Controller: default off, toggling, polling, redraw only on change.
-        check("labels: off by default (every agent start)", !DetectionViewController().showLabels)
+        check("labels: ON by default (every agent start; every drawn box has a label)",
+            DetectionViewController().showLabels)
         let host = FakeDetectionViewHost()
         var cursor = CGPoint(x: 700, y: 900 - 150)  // AppKit points; empty space
         let c = makeController(host)
         c.mouseLocation = { cursor }
+        c.setShowLabels(false)
         check("hover poll: not running while the view is off", !c.isHoverPolling)
         c.turnOn(.detectionsOnly)
         c.exclusionResult(host.result(Set(host.exclusionWindowNumbers)))

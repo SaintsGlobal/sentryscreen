@@ -165,7 +165,7 @@ enum UISelfTest {
             case "fixtures": caseMissingFixtureFails(base + "/missing-fixture")
             case "tuning": caseTuningPolicy(base + "/tuning"); caseSteadiness()
             case "steadiness": caseSteadiness()
-            case "zoom": caseZoomTiles()
+            case "zoom": caseZoomTiles(); caseZoomTilesView(base + "/zoom-view")
             case "devtab": caseDeveloperTab(base + "/devtab")
             case "daemon-followup": casePause(); caseDisplayTopology()
             case "active-covers": caseActiveCoversGauge(base + "/active-covers")
@@ -211,6 +211,7 @@ enum UISelfTest {
         caseTuningPolicy(base + "/tuning")
         caseSteadiness()
         caseZoomTiles()
+        caseZoomTilesView(base + "/zoom-view")
         caseCoverageTripwire()
         caseCropWriter(base + "/crop-writer")
         caseAdmin()
@@ -1947,6 +1948,12 @@ enum UISelfTest {
             "refusal=\(refusal ?? "none")")
         check("settings lock: the refusal is bounded by the budget, not by the holder",
             waited >= 1 && waited < 3, String(format: "waited %.2f s", waited))
+        check("settings: with no PIN the footer says a change asks you to set one; with one, for your PIN",
+            UISettingsPanelView.pinNote(pinSet: false) == "Changes ask you to set a PIN"
+                && UISettingsPanelView.pinNote(pinSet: true) == "Changes ask for your PIN"
+                && UISettingsPanelView.setPinLabel == "Set a PIN…")
+        check("remove: the popover link and the Settings row name the action the same way",
+            UninstallCopy.anywhereLabel == UninstallCopy.row && UninstallCopy.row == "Uninstall…")
         check("settings lock: a refused write changes nothing on disk",
             FileManager.default.contents(atPath: path) == before)
         flock(held, LOCK_UN)
@@ -3481,6 +3488,20 @@ enum UISelfTest {
             curtain.activeIDs.isEmpty && first == 0 && lastSummaryCovers() == 0,
             "active=\(curtain.activeIDs) first=\(String(describing: first)) "
                 + "next=\(String(describing: lastSummaryCovers()))")
+
+        // The exit summary folds the open window's samples like a 60 s close.
+        logger.count("zoomTilePasses")
+        logger.sample("zoomPassMs", 12)
+        logger.sample("zoomPassMs", 14)
+        logger.printFinalSummary()
+        let exitRow: [String: Any]? = fm.contents(atPath: path).flatMap { bytes in
+            bytes.split(separator: 10).compactMap {
+                try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]
+            }.last { $0["event"] as? String == "summary" }
+        }
+        let exitCounters = exitRow?["counters"] as? [String: Any]
+        check("exit summary: the last window carries its sample percentiles (zoomPassMsP50)",
+            exitCounters?["zoomPassMsP50"] as? Int == 14, "\(String(describing: exitCounters))")
     }
 
     // MARK: 7c1 — capture-time attribution (owner report 2026-09-09)
@@ -4209,6 +4230,20 @@ enum UISelfTest {
             RegionLayer.labelText(forWidth: hint.width + pad - 1, height: 626, curtain: true) == "Content blocked")
         check("cover label: the hint says ⌘W, never ⌘Q",
             RegionLayer.curtainHint.contains("⌘W") && !RegionLayer.curtainHint.contains("⌘Q"))
+        // Copy 2026-10-20: the click goes to the title bar, never "here" —
+        // a click on a click-through cover lands on the covered content.
+        check("cover label: the hint sends the click to the title bar, never \"click here\"",
+            RegionLayer.curtainHint == "Content blocked — click the title bar, then press ⌘W"
+                && !RegionLayer.curtainHint.contains("click here"))
+        print(String(format: "# cover label: curtain hint measures %.1f x %.1f pt at 13 pt medium; "
+            + "a curtain shows it from %.1f pt wide", hint.width, hint.height, hint.width + pad))
+        // MEASURED 2026-10-20 (this build, 13 pt medium system font): 324.6 x
+        // 16.0 pt, shown from 332.6 pt wide. ±25 pt absorbs font revisions;
+        // past it the copy changed and this receipt must be redone.
+        check("cover label: the hint measures 300–350 pt wide at 13 pt medium (324.6 measured) and shows at exactly its width plus margin",
+            (300...350).contains(hint.width)
+                && RegionLayer.labelText(forWidth: hint.width + pad, height: 626, curtain: true) == RegionLayer.curtainHint,
+            "hint=\(hint)")
         var curtainInside = true
         for w in stride(from: 20, through: 800, by: 1) {
             if let text = RegionLayer.labelText(forWidth: CGFloat(w), height: 129, curtain: true),
@@ -4790,7 +4825,7 @@ enum UISelfTest {
         check("admin: lookup failure ⇒ not admin AND an error to log", bogus.admin == false && bogus.error != nil, "\(bogus)")
     }
 
-    // MARK: 15 — "Remove SentryScreen…" (SPEC §8.1(7); owner 2026-09-05)
+    // MARK: 15 — "Uninstall…" (SPEC §8.1(7); owner 2026-09-05)
 
     /// The removal path, driven headlessly: who may see the row, the
     /// confirmation's state machine, the command handed to the administrator
@@ -4865,10 +4900,10 @@ enum UISelfTest {
         // --- Copy the parent must see -----------------------------------
         check("uninstall: the closing line says the app closes now",
             UninstallCopy.closing.contains("close now"), UninstallCopy.closing)
-        check("uninstall: the row and the confirmation name an administrator, not the PIN",
+        check("uninstall: both confirmations name an administrator, not the PIN",
             UninstallCopy.body.contains("administrator")
                 && !UninstallCopy.body.lowercased().contains("pin")
-                && UISettingsPanelView.removeCaption.contains("administrator"))
+                && UninstallCopy.cardLines.contains { $0.contains("admin password") })
         check("uninstall: the permission control names all users and a new grant on reinstall",
             UninstallCopy.resetPermissionsLabel.contains("all users")
                 && UninstallCopy.resetPermissionsCaption.contains("reinstall"))
@@ -4969,7 +5004,7 @@ enum UISelfTest {
             actions.removalSuppressedReason != nil, "\(String(describing: actions.removalSuppressedReason))")
         actions.confirmRemove()
         check("uninstall: the suppression is loud and nothing runs",
-            actions.removeMessage?.hasPrefix("Removal is not available in this build") == true
+            actions.removeMessage?.hasPrefix("Uninstall is not available in this build") == true
                 && logs.last?.1.contains("SUPPRESSED") == true
                 && actions.uninstallGate == nil,
             "\(String(describing: actions.removeMessage)) \(logs)")
@@ -4988,26 +5023,25 @@ enum UISelfTest {
             _ banner: Bool,
             _ driver: Bool,
             _ admin: Bool,
-            _ icon: Bool,
             _ confirmation: Bool = false
         ) -> Bool {
             AppDelegate.statusToastIsShown(
                 bannerMode: banner, underUIDriver: driver,
-                isAdmin: admin, showMenuBarIcon: icon,
-                successConfirmationPending: confirmation)
+                isAdmin: admin, successConfirmationPending: confirmation)
         }
-        check("toast: admin + icon on + banner mode ⇒ shown",
-            shown(true, false, true, true))
+        // The 2026-08-28 "icon off ⇒ suppressed" row went with the setting
+        // (2026-10-20): the predicate no longer takes the legacy flag, so a
+        // stored `showMenuBarIcon: false` cannot suppress the toast.
+        check("toast: admin + banner mode ⇒ shown",
+            shown(true, false, true))
         check("toast: pending setup confirmation ⇒ suppressed",
-            !shown(true, false, true, true, true))
-        check("toast: menu-bar icon off ⇒ suppressed (an invisible install stays invisible)",
-            !shown(true, false, true, false))
+            !shown(true, false, true, true))
         check("toast: Standard (child) session ⇒ suppressed (durable shield is sufficient)",
-            !shown(true, false, false, true))
+            !shown(true, false, false))
         check("toast: not in --capture-loss banner mode ⇒ suppressed",
-            !shown(false, false, true, true))
+            !shown(false, false, true))
         check("toast: under the UI driver ⇒ suppressed (screenshots stay byte-stable)",
-            !shown(true, true, true, true))
+            !shown(true, true, true))
 
         check("capture-loss banner: Standard session with no parent surface ⇒ shown",
             AppDelegate.captureLossBannerIsShown(
@@ -5095,15 +5129,23 @@ enum UISelfTest {
     // MARK: 8c — child-session shield + restore grace (owner 2026-08-29)
 
     static func caseChildSessionAndRestoreGrace() {
-        // Status item: the child session gets the shield; the two other gates
-        // (icon setting, onboarding complete) are unchanged.
-        check("status item: Standard session + icon on + onboarding complete ⇒ wanted",
-            AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: true, onboardingComplete: true))
-        check("status item: icon off ⇒ not wanted, admin or not",
-            !AppDelegate.statusItemWanted(isAdmin: true, showMenuBarIcon: false, onboardingComplete: true)
-                && !AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: false, onboardingComplete: true))
+        // Status item: the child session gets the shield; onboarding complete
+        // is the one remaining gate. The icon setting is gone (2026-10-20).
+        check("status item: Standard or admin session + onboarding complete ⇒ wanted",
+            AppDelegate.statusItemWanted(isAdmin: false, onboardingComplete: true)
+                && AppDelegate.statusItemWanted(isAdmin: true, onboardingComplete: true))
         check("status item: onboarding incomplete ⇒ not wanted (setup window owns the parent surface)",
-            !AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: true, onboardingComplete: false))
+            !AppDelegate.statusItemWanted(isAdmin: false, onboardingComplete: false)
+                && !AppDelegate.statusItemWanted(isAdmin: true, onboardingComplete: false))
+        // An older settings.json that hid the icon still loads, keeps the key
+        // through a write, and hides nothing (statusItemWanted no longer
+        // reads it).
+        let legacy = #"{"version": 2, "pause": {"mode": "none"}, "showMenuBarIcon": false}"#
+        let (old, oldWhy) = UISettings.parse(Data(legacy.utf8))
+        check("status item: a legacy showMenuBarIcon false still loads and round-trips, and is not a gate",
+            old?.showMenuBarIcon == false && oldWhy == nil
+                && ((try? old!.encode()).flatMap { UISettings.parse($0).0 }?.showMenuBarIcon == false),
+            "\(String(describing: oldWhy))")
         // Popover: no mutating controls in a Standard session. The read-only
         // branch draws exactly one text control; everything that reaches
         // store.mutate / PinGate lives behind parentControlsAvailable.
@@ -5612,6 +5654,58 @@ enum UISelfTest {
         }
         check("glyph: the four states draw four different images (owner: separate icons)",
             Set(seen).count == 4, "distinct=\(Set(seen).count)")
+
+        // Green check (2026-10-20): only Protecting with every setup check
+        // passing; every other state keeps its own badge or none.
+        for glyph in [UIGlyph.protecting, .paused, .degraded, .starting] {
+            for healthy in [false, true] {
+                let ok = UIState.menuBarBadgeOK(glyph: glyph, setupHealthy: healthy)
+                check("glyph: green check for \(glyph.rawValue), setup healthy \(healthy)",
+                    ok == (glyph == .protecting && healthy), "ok=\(ok)")
+                let badge = SentryLanternGlyph.badge(for: glyph, allGood: ok)
+                let want: SentryLanternGlyph.Badge = switch glyph {
+                case .protecting: healthy ? .ok : .none
+                case .paused: .pause
+                case .degraded: .alert
+                case .starting: .none
+                }
+                check("glyph: \(glyph.rawValue) badge with setup healthy \(healthy) is \(want)",
+                    badge == want, "badge=\(badge)")
+            }
+        }
+        let plain = UIStatusItem.glyphImage(.protecting, description: "d")
+        let good = UIStatusItem.glyphImage(.protecting, allGood: true, description: "d")
+        check("glyph: the green-check face is not a template (it carries green)", !good.isTemplate)
+        check("glyph: the green-check face is the same 16x16 pt size", good.size == plain.size, "\(good.size)")
+        check("glyph: the green-check face differs from plain Protecting",
+            good.tiffRepresentation != plain.tiffRepresentation)
+        // setupHealthy needs EVERY check; each one alone failing turns it off.
+        func healthy(installed: Bool = true, screen: Bool = true,
+            components: UIOnboardingComponentHealth = .healthy, services: Bool? = true, failed: Bool = false,
+            live: Bool = true) -> Bool
+        {
+            UIOnboardingRuntime.setupHealthy(installedMode: installed, screenRecordingApproved: screen,
+                components: components, servicesVerified: services, failedHealthSource: failed, captureLive: live)
+        }
+        check("glyph: setup healthy when every check passes", healthy())
+        check("glyph: a development run is never all good", !healthy(installed: false))
+        check("glyph: no Screen Recording → no green check", !healthy(screen: false))
+        check("glyph: a missing component → no green check",
+            !healthy(components: .unhealthy(reason: "x")))
+        check("glyph: launchd jobs not yet checked → no green check", !healthy(services: nil))
+        check("glyph: launchd jobs failed → no green check", !healthy(services: false))
+        check("glyph: an active health failure → no green check", !healthy(failed: true))
+        check("glyph: a dead capture stream → no green check", !healthy(live: false))
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        func due(installed: Bool = true, inFlight: Bool = false, last: Date?, at: TimeInterval) -> Bool {
+            UIOnboardingRuntime.serviceRecheckDue(
+                installedMode: installed, inFlight: inFlight, last: last, now: t0.addingTimeInterval(at))
+        }
+        check("glyph: the first service recheck is due at once", due(last: nil, at: 0))
+        check("glyph: a service recheck is not due 29 s after the last", !due(last: t0, at: 29))
+        check("glyph: a service recheck is due 30 s after the last", due(last: t0, at: 30))
+        check("glyph: one service recheck at a time", !due(inFlight: true, last: t0, at: 60))
+        check("glyph: a development run never rechecks launchd", !due(installed: false, last: nil, at: 0))
     }
 }
 
