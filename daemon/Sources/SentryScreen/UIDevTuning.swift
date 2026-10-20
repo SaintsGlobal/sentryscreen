@@ -9,7 +9,10 @@ import SwiftUI
 //     detection of a policy class, every box a tuning rule removed, and every
 //     curtain event; the UI reads a 60 s snapshot on the settings tick. The
 //     UI and the pipeline are one process (main.swift), so nothing tails a
-//     file.
+//     file. Since 2026-10-20 the snapshot leads with one ROW PER TRACK (a
+//     class in one window at one coarse place on screen), ranked by peak
+//     score decayed by age, each row saying what happened to it (curtain,
+//     cover, which rule removed it, or under its floor).
 //   * `UIDevTuning` — the UI side (main thread). Holds the draft policy the
 //     sliders edit, writes the tuning file atomically with the parent/ file
 //     contract (0660, the directory's group), and shows the agent's echo:
@@ -28,6 +31,115 @@ final class TuningReadout {
         let label: String
         let conf: Float
         let sidePt: Double?
+        /// The window the curtain CREDITED this box to on this frame
+        /// (`Curtain.onAttribution`); nil when it was not credited (not
+        /// blocked, a walk-skipped frame, no curtain in this cover mode).
+        var windowID: CGWindowID? = nil
+        /// What the policy did with the box (never `.curtain`: a drop is a
+        /// track's fate, not one box's). nil: a box no row shows.
+        var status: TrackRow.Status? = nil
+        /// Capture time of the box's frame (`at` is when it was recorded,
+        /// which is what the 60 s window is measured in).
+        var frameAt: Double? = nil
+    }
+
+    /// ONE ROW PER TRACK (2026-10-20): a policy class in one window at one
+    /// coarse place on screen (`TrackKey`), alive while hits keep arriving,
+    /// gone `windowSecs` after its last hit. Rows hold labels, numbers and
+    /// the app name only — no window title, no pixels.
+    struct TrackRow: Equatable, Identifiable {
+        /// What happened to the track, most consequential first.
+        enum Status: Equatable {
+            /// A curtain drop's evidence included this track's boxes
+            /// (`Curtain.onDrop` source indices). Sticky for the track's life.
+            case curtain
+            /// At least one box blocked (region / media cover, or a curtain hit).
+            case covered
+            /// Never blocked; the LAST rule that removed a box, in the words a
+            /// person edits: "covered-beats-exposed", "minBoxPt",
+            /// "minBoxFraction", "size step", "outside ROI".
+            case removed(String)
+            /// Never blocked, never removed by a rule: under its floor.
+            case below
+
+            var symbol: String {
+                switch self {
+                case .curtain: return "✓"
+                case .covered: return "◼"
+                case .removed: return "⊘"
+                case .below: return "○"
+                }
+            }
+
+            var text: String {
+                switch self {
+                case .curtain: return "curtain dropped"
+                case .covered: return "covered"
+                case let .removed(rule): return "removed by \(rule)"
+                case .below: return "below floor"
+                }
+            }
+
+            /// Merging a box into its track: a later box only raises it.
+            var weight: Int {
+                switch self {
+                case .curtain: return 3
+                case .covered: return 2
+                case .removed: return 1
+                case .below: return 0
+                }
+            }
+        }
+
+        let id: String
+        let label: String
+        let windowID: CGWindowID?
+        let app: String?
+        let peak: Float
+        let latest: Float
+        /// The floor the latest box had to clear (flat threshold or its size
+        /// step): the mark on the score bar.
+        let floor: Float
+        let sidePt: Double?
+        let status: Status
+        let hits: Int
+        let ageSecs: Double
+        /// `peak × 0.5^(age / rankHalfLifeSecs)`, the sort key.
+        let rank: Double
+
+        var code: String { TuningReadout.classCode(label) }
+        /// NEAR MISS: the peak sat under its floor by at most `nearMissBand`.
+        var nearMiss: Bool { peak < floor && peak >= floor - TuningReadout.nearMissBand }
+    }
+
+    /// A curtain drop for the readout: the dropped window and the indices,
+    /// into the frame's blocked list, of the boxes that tripped it.
+    struct Drop: Equatable {
+        let windowID: CGWindowID
+        let indices: [Int]
+    }
+
+    /// How a box finds its track. Window nil = not credited this frame; such
+    /// a box joins a track with the same label and cell in any window
+    /// (`mergeTrack`), so the curtain's 1-in-3 walk does not split a subject.
+    struct TrackKey: Hashable {
+        let label: String
+        let windowID: CGWindowID?
+        let cellX: Int
+        let cellY: Int
+        var id: String { "\(label)|\(windowID.map { String($0) } ?? "-")|\(cellX),\(cellY)" }
+    }
+
+    struct Track {
+        var key: TrackKey
+        var app: String?
+        var lastAt: Double
+        var peak: Float
+        var latest: Float
+        var floor: Float
+        var sidePt: Double?
+        var status: TrackRow.Status
+        var hits: Int
     }
 
     /// A box a tuning rule removed or relabelled, with the rule that did it.
@@ -85,6 +197,15 @@ final class TuningReadout {
     }
 
     struct Snapshot: Equatable {
+        /// Every live track, ranked (`rankHalfLifeSecs`), strongest first.
+        var rows: [TrackRow] = []
+        /// Tracks lost to `trackCapacity` since launch or the last `reset`.
+        var tracksEvicted = 0
+        /// Frames whose credited windows / drop indices could not be mapped
+        /// back to boxes, because the policy mirror disagreed with the
+        /// pipeline's blocked count (`record`). Those boxes still count,
+        /// without window or ✓. Shown, never silent.
+        var attributionSkipped = 0
         var classes: [ClassStat] = []
         var lastDrop: CurtainEvent?
         var lastCurtain: CurtainEvent?
@@ -111,7 +232,7 @@ final class TuningReadout {
         var overflow = 0
         /// The same for the frame ring (`frameCapacity`); shown too.
         var framesOverflow = 0
-        var isEmpty: Bool { classes.isEmpty && lastCurtain == nil && lastSuppression == nil }
+        var isEmpty: Bool { rows.isEmpty && classes.isEmpty && lastCurtain == nil && lastSuppression == nil }
     }
 
     /// The readout's window. Requirement (owner brief 2026-09-10): "the last
@@ -145,6 +266,33 @@ final class TuningReadout {
     /// over the worst case. In-window eviction is COUNTED into
     /// `Snapshot.framesOverflow` and printed, like the hit ring's.
     static let frameCapacity = 2048
+    /// RANKING HALF-LIFE: rows sort by `peak × 0.5^(age / this)`, age =
+    /// seconds since the track's last hit. 15 s (owner design 2026-10-20).
+    /// DERIVED from the 60 s window: four half-lives, so a row about to age
+    /// out weighs a sixteenth of its peak, and a fresh 0.75 outranks a 0.95
+    /// from 6 s ago (0.95 × 0.76 = 0.72) — strong fresh hits on top, older
+    /// ones drifting down. ASSUMED as a reading pace: nothing measured how
+    /// fast a person reads the list.
+    static let rankHalfLifeSecs: Double = 15
+    /// NEAR-MISS band under a class floor. 0.05 (owner design 2026-10-20),
+    /// DERIVED from the jitter receipt at `TuningPolicy.keepGap`: the same
+    /// content's score moves p50 0.03 / p75 0.09 on a small shift, so a
+    /// peak within 0.05 under its floor is one an ordinary jitter can carry
+    /// over it — the rows that matter while tuning a floor.
+    static let nearMissBand: Float = 0.05
+    /// Track cell grid per display axis: a box's centre picks one of 4 × 4
+    /// cells, so two subjects in one window are two rows when they sit in
+    /// different quarters of the screen. ASSUMED (2026-10-20): coarse on
+    /// purpose, because a subject that scrolls across a cell boundary starts
+    /// a new row and a finer grid would make that the common case.
+    static let trackGrid = 4
+    /// TRACK-TABLE CAP. DERIVED (2026-10-20): a key is class × window ×
+    /// cell, so one window holds at most 8 policy classes × 16 cells = 128
+    /// tracks however long it scrolls; 512 is four windows saturated at once.
+    /// Full: the LOWEST-RANKED track is evicted, COUNTED into
+    /// `Snapshot.tracksEvicted`, shown on the tab, and logged once per
+    /// episode through `onLimit` with this name, the limit and the count.
+    static let trackCapacity = 512
 
     /// A time-ordered ring for one window: entries older than the window
     /// are pruned before each append, and only entries still inside the
@@ -189,6 +337,15 @@ final class TuningReadout {
     }
 
     private let lock = NSLock()
+    /// `trackCapacity` and attribution-mismatch reports, edge-triggered (one
+    /// line per episode), called outside the lock. The pipeline wires it to
+    /// the run log (`"event":"tuning-readout"`); unwired in tests and the demo.
+    var onLimit: ((String) -> Void)?
+    private var tracks: [TrackKey: Track] = [:]
+    private var tracksEvicted = 0
+    private var trackCapFull = false
+    private var attributionSkipped = 0
+    private var attributionMismatch = false
     private var hits = WindowRing<Hit>(capacity: TuningReadout.capacity, time: { $0.at })
     private var frames = WindowRing<FrameStat>(capacity: TuningReadout.frameCapacity, time: { $0.at })
     private var suppressions: [Suppression] = []
@@ -208,20 +365,58 @@ final class TuningReadout {
     /// frame's `TuningPolicy.filter` result: the FRAME-level numbers come
     /// from it rather than being re-derived, so the tab and the run log's
     /// counters can never disagree.
+    ///
+    /// TRACKS (2026-10-20): every policy-class box also lands in its track.
+    /// Its fate comes from `TuningPolicy.verdicts`, the Detection view's
+    /// per-box mirror of `filter`, given the same `tracked` and `roi`, so a
+    /// row and the trace never tell one box two ways. `windows` (credited
+    /// window per box) and `drops` index the pipeline's BLOCKED list —
+    /// `filter`'s blocked narrowed by the ROI, what `Curtain.update` saw —
+    /// which is the raw boxes whose verdict passes, in raw order. When the
+    /// mirror's count is not `blockedCount`, the frame's boxes still count
+    /// but carry no window or ✓, and the mismatch is counted and logged.
+    /// `appName` (memoized by the caller) runs outside the lock.
     func record(
         raw: [Detection], filtered: TuningPolicy.Filtered, tuning: TuningPolicy,
-        mode: PolicyMode, blockFaces: Bool, screen: CGSize, now: Double
+        mode: PolicyMode, blockFaces: Bool, screen: CGSize, now: Double,
+        tracked: TuningPolicy.CoveredInput = .init(), roi: CGRect? = nil, blockedCount: Int? = nil,
+        windows: [Int: CGWindowID] = [:], drops: [Drop] = [],
+        appName: (CGWindowID) -> String? = { _ in nil }, frameAt: Double? = nil
     ) {
         guard !raw.isEmpty else { return }
         let measurable = screen.width > 0 && screen.height > 0
         var newHits: [Hit] = []
         var newSuppressions: [Suppression] = []
         let (demoted, _) = tuning.demoteCovered(raw)
+        let verdicts = tuning.verdicts(
+            raw, mode: mode, blockFaces: blockFaces, screen: screen, roi: roi, tracked: tracked)
+        // Blocked-list index → raw index: the mirror's passing boxes, in order.
+        let rawOfBlocked = verdicts.indices.filter { verdicts[$0].passes }
+        let expected = blockedCount ?? filtered.blocked.count
+        let mapped = rawOfBlocked.count == expected
+        var windowOfRaw: [Int: CGWindowID] = [:]
+        var droppedRaw: [Int: CGWindowID] = [:]
+        if mapped {
+            for (b, w) in windows where rawOfBlocked.indices.contains(b) { windowOfRaw[rawOfBlocked[b]] = w }
+            for drop in drops {
+                for b in drop.indices where rawOfBlocked.indices.contains(b) { droppedRaw[rawOfBlocked[b]] = drop.windowID }
+            }
+        }
+        var apps: [CGWindowID: String] = [:]
+        for w in Set(windowOfRaw.values).union(droppedRaw.values) { apps[w] = appName(w) }
+        var trackHits: [(box: CGRect, hit: Hit, floor: Float, dropped: Bool)] = []
         for (i, d) in raw.enumerated() {
             guard tuning.rule(for: d.label) != nil, d.label != TuningPolicy.injectLabel else { continue }
             let side: Double? = measurable
                 ? Double(min(d.box.width * screen.width, d.box.height * screen.height)) : nil
-            newHits.append(Hit(at: now, label: d.label, conf: d.confidence, sidePt: side))
+            var hit = Hit(at: now, label: d.label, conf: d.confidence, sidePt: side)
+            hit.windowID = droppedRaw[i] ?? windowOfRaw[i]
+            hit.frameAt = frameAt
+            if let (status, floor) = Self.fate(verdicts[i], raw: d, tuning: tuning, mode: mode, blockFaces: blockFaces) {
+                hit.status = status
+                trackHits.append((d.box, hit, floor, droppedRaw[i] != nil))
+            }
+            newHits.append(hit)
             let after = demoted[i]
             if after.label != d.label {
                 newSuppressions.append(Suppression(
@@ -261,10 +456,30 @@ final class TuningReadout {
         // not kept.
         let blockedFlat = !filtered.blocked.isEmpty || filtered.stepDropped > 0
         let keepFrame = blockedFlat || filtered.minBoxDropped > 0 || filtered.demoted > 0
-        guard !newHits.isEmpty || !newSuppressions.isEmpty || keepFrame else { return }
+        guard !newHits.isEmpty || !newSuppressions.isEmpty || keepFrame || !mapped else { return }
+        var limitLines: [String] = []
         lock.lock()
-        defer { lock.unlock() }
+        defer {
+            lock.unlock()
+            for line in limitLines { onLimit?(line) }
+        }
         let since = now - Self.windowSecs
+        if !mapped {
+            attributionSkipped += 1
+            if !attributionMismatch {
+                attributionMismatch = true
+                limitLines.append(
+                    "attribution skipped: policy mirror passes \(rawOfBlocked.count) boxes, pipeline "
+                        + "blocked \(expected); such frames' boxes are counted without window or curtain mark "
+                        + "(fix: TuningReadout.record / TuningPolicy.verdicts)")
+            }
+        } else {
+            attributionMismatch = false
+        }
+        for t in trackHits {
+            mergeTrack(t.box, hit: t.hit, floor: t.floor, dropped: t.dropped,
+                app: t.hit.windowID.flatMap { apps[$0] }, now: now, limitLines: &limitLines)
+        }
         hits.append(contentsOf: newHits, since: since)
         if keepFrame {
             let f = FrameStat(
@@ -287,10 +502,121 @@ final class TuningReadout {
         if action.hasPrefix("drop") { lastDrop = e }
     }
 
-    /// Demo / selftest only: back to empty.
+    /// The box's status and the floor its bar is drawn against, from its
+    /// verdict; nil for a box no row shows (a covered class the current
+    /// policy does not block, a class with no rule). A demoted box keeps
+    /// its RAW label's row and floor, so an exposed box the rule relabelled
+    /// reads as removed BY that rule, not as a covered-class box.
+    static func fate(
+        _ v: TuningPolicy.Verdict, raw d: Detection, tuning: TuningPolicy, mode: PolicyMode, blockFaces: Bool
+    ) -> (TrackRow.Status, Float)? {
+        let rawFloor = tuning.startThreshold(d.label, mode: mode, blockFaces: blockFaces)
+        let ownFloor = tuning.startThreshold(v.label, mode: mode, blockFaces: blockFaces) ?? 0
+        switch v.policy {
+        case let .passes(floor, _): return (.covered, floor)
+        case let .kept(start, _, _): return (.covered, start)
+        case let .belowThreshold(t):
+            return v.demotion != nil ? (.removed("covered-beats-exposed"), rawFloor ?? t) : (.below, t)
+        case .classOffInPolicy:
+            guard v.demotion != nil, let rawFloor else { return nil }
+            return (.removed("covered-beats-exposed"), rawFloor)
+        case let .minBox(_, minBoxPt, _): return (.removed(minBoxPt > 0 ? "minBoxPt" : "minBoxFraction"), ownFloor)
+        case let .thresholdStep(floor, _, _): return (.removed("size step"), floor)
+        case .outsideROI: return (.removed("outside ROI"), ownFloor)
+        case .weak, .notPolicyClass: return nil
+        }
+    }
+
+    /// Lock held. One box into its track (see `TrackKey` for how a box with
+    /// no credited window finds one); a new track past `trackCapacity`
+    /// evicts the lowest-ranked one, counted and reported.
+    private func mergeTrack(
+        _ box: CGRect, hit: Hit, floor: Float, dropped: Bool, app: String?, now: Double,
+        limitLines: inout [String]
+    ) {
+        let g = Self.trackGrid
+        let cx = min(g - 1, max(0, Int(box.midX * CGFloat(g))))
+        let cy = min(g - 1, max(0, Int((1 - box.midY) * CGFloat(g))))  // row 0 at the top, like the screen
+        let since = now - Self.windowSecs
+        var key = TrackKey(label: hit.label, windowID: hit.windowID, cellX: cx, cellY: cy)
+        if tracks[key].map({ $0.lastAt < since }) ?? true {
+            // The other side of the window rule: an uncredited box joins the
+            // most recently hit live track of its label and cell in any
+            // window; a credited box adopts a live uncredited one (re-keyed).
+            let sibling = tracks.values
+                .filter { $0.key.label == hit.label && $0.key.cellX == cx && $0.key.cellY == cy }
+                .filter { $0.lastAt >= since && (hit.windowID == nil || $0.key.windowID == nil) }
+                .max { $0.lastAt < $1.lastAt }
+            if let sibling {
+                if hit.windowID != nil {
+                    var t = tracks.removeValue(forKey: sibling.key)!
+                    t.key = key
+                    tracks[key] = t
+                } else {
+                    key = sibling.key
+                }
+            }
+        }
+        let status: TrackRow.Status = dropped ? .curtain : (hit.status ?? .below)
+        if var t = tracks[key], t.lastAt >= since {
+            t.lastAt = now
+            t.peak = max(t.peak, hit.conf)
+            t.latest = hit.conf
+            t.floor = floor
+            t.sidePt = hit.sidePt
+            t.hits += 1
+            if status.weight >= t.status.weight { t.status = status }
+            if t.app == nil { t.app = app }
+            tracks[key] = t
+            return
+        }
+        tracks.removeValue(forKey: key)  // aged out: a new row, not a resurrection
+        if tracks.count >= Self.trackCapacity { tracks = tracks.filter { $0.value.lastAt >= since } }
+        if tracks.count >= Self.trackCapacity {
+            let victim = tracks.values.min { Self.rank($0, now: now) < Self.rank($1, now: now) }!
+            tracks.removeValue(forKey: victim.key)
+            tracksEvicted += 1
+            if !trackCapFull {
+                trackCapFull = true
+                limitLines.append(
+                    "track table full: budget=TuningReadout.trackCapacity configured=\(Self.trackCapacity) "
+                        + "observed=\(Self.trackCapacity + 1) live tracks; the lowest-ranked row is evicted "
+                        + "and counted on the Developer tab (fix: TuningReadout.trackCapacity)")
+            }
+        } else {
+            trackCapFull = false
+        }
+        tracks[key] = Track(
+            key: key, app: app, lastAt: now, peak: hit.conf, latest: hit.conf, floor: floor,
+            sidePt: hit.sidePt, status: status, hits: 1)
+    }
+
+    static func rank(_ t: Track, now: Double) -> Double {
+        Double(t.peak) * pow(0.5, max(0, now - t.lastAt) / rankHalfLifeSecs)
+    }
+
+    /// FBE / FGE / MGE / BE / AE for the exposed classes, "covered" for the
+    /// covered ones (Copy carries the full label).
+    static func classCode(_ label: String) -> String {
+        switch label {
+        case "FEMALE_BREAST_EXPOSED": return "FBE"
+        case "FEMALE_GENITALIA_EXPOSED": return "FGE"
+        case "MALE_GENITALIA_EXPOSED": return "MGE"
+        case "BUTTOCKS_EXPOSED": return "BE"
+        case "ANUS_EXPOSED": return "AE"
+        default: return TuningPolicy.coveredLabels.contains(label) ? "covered" : label
+        }
+    }
+
+    /// The tab's Clear, the demo and the selftest: back to empty.
     func reset() {
         lock.lock()
         defer { lock.unlock() }
+        tracks.removeAll()
+        tracksEvicted = 0
+        trackCapFull = false
+        attributionSkipped = 0
+        attributionMismatch = false
         hits.reset()
         frames.reset()
         suppressions.removeAll()
@@ -305,6 +631,9 @@ final class TuningReadout {
         let suppressions = self.suppressions
         let curtain = self.curtain
         let lastDrop = self.lastDrop
+        let tracks = self.tracks
+        let tracksEvicted = self.tracksEvicted
+        let attributionSkipped = self.attributionSkipped
         lock.unlock()
         let since = now - Self.windowSecs
         var byLabel: [String: (hits: Int, minPt: Double?, maxPt: Double?, maxConf: Float)] = [:]
@@ -319,6 +648,16 @@ final class TuningReadout {
             byLabel[h.label] = s
         }
         var out = Snapshot()
+        // Ranked HERE, on the 1 Hz settings tick, never per frame: a row
+        // moves at most once a second, and the view animates the move.
+        out.rows = tracks.values.filter { $0.lastAt >= since }.map { t in
+            TrackRow(
+                id: t.key.id, label: t.key.label, windowID: t.key.windowID, app: t.app, peak: t.peak,
+                latest: t.latest, floor: t.floor, sidePt: t.sidePt, status: t.status, hits: t.hits,
+                ageSecs: max(0, now - t.lastAt), rank: Self.rank(t, now: now))
+        }.sorted { $0.rank != $1.rank ? $0.rank > $1.rank : $0.id < $1.id }
+        out.tracksEvicted = tracksEvicted
+        out.attributionSkipped = attributionSkipped
         let order = TuningPolicy.exposedLabels + TuningPolicy.coveredLabels
         out.classes = order.compactMap { label in
             byLabel[label].map { ClassStat(label: label, hits: $0.hits, minPt: $0.minPt, maxPt: $0.maxPt, maxConf: $0.maxConf) }
@@ -596,10 +935,50 @@ final class UIDevTuning: ObservableObject {
         }
     }
 
-    /// The settings tick (1 Hz): refresh the 60 s readout.
+    /// The settings tick (1 Hz): refresh the 60 s readout. While frozen the
+    /// ROWS stay exactly as they were (order and values, so they can be
+    /// read); the footer keeps updating. A freeze ends on its own after
+    /// `freezeSecs`.
     func tick(now: Double = CFAbsoluteTimeGetCurrent()) {
-        let s = readout.snapshot(now: now)
+        if let at = frozenAt, now - at >= Self.freezeSecs { frozenAt = nil }
+        var s = readout.snapshot(now: now)
+        if frozenAt != nil { s.rows = snapshot.rows }
         if s != snapshot { snapshot = s }
+    }
+
+    /// FREEZE TIMEOUT: a frozen readout unfreezes by itself after this long.
+    /// 30 s (owner design 2026-10-20): half the 60 s window, so a frozen
+    /// list never hides more than half a window of re-ranking from someone
+    /// who walked away; DERIVED from `TuningReadout.windowSecs`, ASSUMED as
+    /// enough time to read a dozen rows.
+    static let freezeSecs: Double = 30
+    /// When Freeze was pressed; nil = live. Main thread.
+    @Published private(set) var frozenAt: Double?
+
+    func freeze(now: Double = CFAbsoluteTimeGetCurrent()) { frozenAt = now }
+    func unfreeze(now: Double = CFAbsoluteTimeGetCurrent()) {
+        frozenAt = nil
+        tick(now: now)
+    }
+
+    /// Seconds until a freeze ends by itself (0 when live).
+    func freezeRemaining(now: Double = CFAbsoluteTimeGetCurrent()) -> Int {
+        guard let at = frozenAt else { return 0 }
+        return max(0, Int((Self.freezeSecs - (now - at)).rounded(.up)))
+    }
+
+    /// Clear: every row, count and footer line goes; a freeze ends.
+    func clearReadout(now: Double = CFAbsoluteTimeGetCurrent()) {
+        readout.reset()
+        frozenAt = nil
+        tick(now: now)
+    }
+
+    /// Copy (the readout's): every row, then the footer, as text.
+    func copyReadout() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(UIDeveloperSettingsSection.readoutText(snapshot), forType: .string)
     }
 
     static let clock: DateFormatter = {
@@ -955,14 +1334,24 @@ struct UIDeveloperSettingsSection: View {
                     .foregroundStyle(.secondary)
                     .uiControl("\(Self.idPrefix).readout.empty", kind: .text, read: { Self.readoutEmptyText })
             }
-            ForEach(s.classes, id: \.label) { c in
-                Text(Self.classLine(c))
-                    .uiFont(.caption2)
-                    .monospacedDigit()
-                    .fixedSize(horizontal: false, vertical: true)
-                    .uiControl("\(Self.idPrefix).readout.\(c.label)", kind: .text,
-                        read: { [tuning] in tuning.snapshot.classes.first { $0.label == c.label }.map(Self.classLine) ?? "" })
+            readoutControls
+            let shown = Array(s.rows.prefix(Self.visibleRows))
+            ForEach(Array(shown.enumerated()), id: \.element.id) { i, row in
+                UIDevTrackRow(row: row)
+                    .uiControl("\(Self.idPrefix).readout.row.\(i)", kind: .text,
+                        read: { [tuning] in
+                            tuning.snapshot.rows.indices.contains(i) ? Self.rowLine(tuning.snapshot.rows[i]) : ""
+                        })
             }
+            .animation(.easeInOut(duration: 0.35), value: shown.map(\.id))
+            if s.rows.count > shown.count {
+                Text(Self.moreRowsLine(s))
+                    .uiFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .uiControl("\(Self.idPrefix).readout.more", kind: .text,
+                        read: { [tuning] in Self.moreRowsLine(tuning.snapshot) })
+            }
+            if !s.rows.isEmpty { Divider() }
             Text(Self.dropLine(s))
                 .uiFont(.caption2)
                 .foregroundStyle(.secondary)
@@ -992,7 +1381,94 @@ struct UIDeveloperSettingsSection: View {
                         + "(TuningReadout.frameCapacity \(TuningReadout.frameCapacity), UIDevTuning.swift)",
                     symbol: UISymbol.warning, tint: .systemOrange)
             }
+            if s.tracksEvicted > 0 {
+                UIInlineMessage(text: Self.tracksEvictedLine(s), symbol: UISymbol.warning, tint: .systemOrange)
+                    .uiControl("\(Self.idPrefix).readout.tracksEvicted", kind: .text,
+                        read: { [tuning] in Self.tracksEvictedLine(tuning.snapshot) })
+            }
+            if s.attributionSkipped > 0 {
+                UIInlineMessage(text: Self.attributionSkippedLine(s), symbol: UISymbol.warning, tint: .systemOrange)
+            }
         }
+    }
+
+    /// ROWS SHOWN on the tab. 12 (2026-10-20), ASSUMED: about what fits the
+    /// popover's Developer page without the list pushing the footer out of
+    /// sight; the rest are counted below the list ("+N more") and every row
+    /// is in Copy, so nothing is hidden without saying so.
+    static let visibleRows = 12
+
+    static let freezeLabel = "Freeze"
+    static let clearLabel = "Clear"
+    static let copyReadoutLabel = "Copy readout"
+
+    private var readoutControls: some View {
+        let frozen = tuning.frozenAt != nil
+        let freezeText = frozen ? "Frozen — live in \(tuning.freezeRemaining()) s" : Self.freezeLabel
+        let toggle = { [tuning] in
+            if tuning.frozenAt == nil { tuning.freeze() } else { tuning.unfreeze() }
+        }
+        return HStack(spacing: 8) {
+            Button(freezeText, action: toggle)
+                .controlSize(.small)
+                .uiControl("\(Self.idPrefix).readout.freeze", kind: .toggle,
+                    read: { [tuning] in tuning.frozenAt == nil ? "off" : "on" }, activate: toggle)
+            Button(Self.clearLabel) { tuning.clearReadout() }
+                .controlSize(.small)
+                .uiControl("\(Self.idPrefix).readout.clear", kind: .button,
+                    read: { Self.clearLabel }, activate: { [tuning] in tuning.clearReadout() })
+            Button(Self.copyReadoutLabel) { tuning.copyReadout() }
+                .controlSize(.small)
+                .uiControl("\(Self.idPrefix).readout.copy", kind: .button,
+                    read: { Self.copyReadoutLabel }, activate: { [tuning] in tuning.copyReadout() })
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// "0.93 · floor 0.90" — the row's score text. Latest follows when it
+    /// differs from the peak.
+    static func scoreText(_ r: TuningReadout.TrackRow) -> String {
+        var t = "\(TuningReadout.conf(r.peak)) · floor \(TuningReadout.conf(r.floor))"
+        if r.latest != r.peak { t += " (latest \(TuningReadout.conf(r.latest)))" }
+        return t
+    }
+
+    static func ageText(_ secs: Double) -> String { "\(Int(secs.rounded(.down))) s" }
+
+    /// One row as text: what the row's id reads, and one line of Copy.
+    static func rowLine(_ r: TuningReadout.TrackRow) -> String {
+        let size = r.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "size unmeasured"
+        return "\(r.status.symbol) \(r.code) \(scoreText(r)) \(size) \(r.app ?? "app unknown") \(ageText(r.ageSecs))"
+            + " — \(r.status.text)" + (r.nearMiss ? " · near miss" : "")
+    }
+
+    static func moreRowsLine(_ s: TuningReadout.Snapshot) -> String {
+        "+\(s.rows.count - min(s.rows.count, visibleRows)) more rows (UIDeveloperSettingsSection.visibleRows "
+            + "\(visibleRows)); Copy readout has all \(s.rows.count)"
+    }
+
+    static func tracksEvictedLine(_ s: TuningReadout.Snapshot) -> String {
+        "Readout track table full: \(s.tracksEvicted) rows evicted, lowest-ranked first "
+            + "(TuningReadout.trackCapacity \(TuningReadout.trackCapacity), UIDevTuning.swift)"
+    }
+
+    static func attributionSkippedLine(_ s: TuningReadout.Snapshot) -> String {
+        "\(s.attributionSkipped) frames counted without window or curtain mark (policy mirror disagreed "
+            + "with the pipeline; TuningReadout.record)"
+    }
+
+    /// Copy readout: every row, ranked, then the footer and the per-class
+    /// totals. Labels, numbers and app names only.
+    static func readoutText(_ s: TuningReadout.Snapshot) -> String {
+        var lines = ["SentryScreen Developer readout, last \(Int(TuningReadout.windowSecs)) s "
+            + "(rank = peak × 0.5^(age / \(Int(TuningReadout.rankHalfLifeSecs)) s))"]
+        lines += s.rows.map { "\(rowLine($0)) [\($0.label), window \($0.windowID.map { String($0) } ?? "-"), \($0.hits) hits]" }
+        if s.rows.isEmpty { lines.append(readoutEmptyText) }
+        lines += [dropLine(s), suppressedLine(s), stepsLine(s)]
+        lines += s.classes.map(classLine)
+        if s.tracksEvicted > 0 { lines.append(tracksEvictedLine(s)) }
+        if s.attributionSkipped > 0 { lines.append(attributionSkippedLine(s)) }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     static func classLine(_ c: TuningReadout.ClassStat) -> String {
@@ -1027,5 +1503,66 @@ struct UIDeveloperSettingsSection: View {
     static func stepsLine(_ s: TuningReadout.Snapshot) -> String {
         "Threshold steps: \(s.stepBoxesCut) boxes cut, \(s.stepFramesEmptied) of \(s.blockedFrames) "
             + "blocked frames emptied (a cut moves a curtain drop only if it empties its window that frame)"
+    }
+}
+
+/// One "Last 60 s" row: status, class code, a score bar with the class
+/// floor marked, the score text, box size, app and age. A near miss (peak
+/// within `TuningReadout.nearMissBand` under its floor) is tinted, because
+/// those are the rows a floor change would flip.
+struct UIDevTrackRow: View {
+    let row: TuningReadout.TrackRow
+    @Environment(\.uiTextScale) private var textScale
+
+    /// Bar length in points at text scale 1. DERIVED: 0.01 of score per
+    /// 0.64 pt, so a 0.05 near-miss gap is 3.2 pt, visible at a glance.
+    static let barWidth: CGFloat = 64
+
+    var body: some View {
+        let w = UITypography.points(Self.barWidth, scale: textScale)
+        let blocked = row.status == .curtain || row.status == .covered
+        return HStack(spacing: 6) {
+            Text(row.status.symbol)
+                .uiFont(.caption, weight: .bold)
+                .foregroundStyle(row.status == .curtain ? SentryColor.ok : SentryColor.ink)
+                .frame(minWidth: 12)
+            Text(row.code)
+                .uiFont(.caption2, weight: .semibold)
+                .frame(minWidth: 44, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Rectangle().fill(SentryColor.line)
+                Rectangle()
+                    .fill(blocked ? SentryColor.accent : SentryColor.muted)
+                    .frame(width: w * CGFloat(min(1, max(0, row.peak))))
+                Rectangle()
+                    .fill(SentryColor.ink)
+                    .frame(width: 2)
+                    .offset(x: w * CGFloat(min(1, max(0, row.floor))) - 1)
+            }
+            .frame(width: w, height: 6)
+            .accessibilityHidden(true)
+            Text(UIDeveloperSettingsSection.scoreText(row))
+                .uiFont(.caption2)
+                .monospacedDigit()
+            Spacer(minLength: 4)
+            Text(row.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "—")
+                .uiFont(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Text(row.app ?? "—")
+                .uiFont(.caption2)
+                .lineLimit(1)
+                .foregroundStyle(.secondary)
+            Text(UIDeveloperSettingsSection.ageText(row.ageSecs))
+                .uiFont(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(row.nearMiss ? SentryColor.accentSoft : Color.clear)
+        .help(row.status.text + (row.nearMiss ? " · near miss" : ""))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(UIDeveloperSettingsSection.rowLine(row))
     }
 }

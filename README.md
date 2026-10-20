@@ -217,10 +217,11 @@ and detection stay on, and each lift is written to the parent alert log.
 Every build includes the tuning tools:
 
 - **Settings › Developer:** per-class thresholds, size floors (`thresholdSteps`),
-  curtain hit counts and hold times, with a live "Last 60 s" readout of hits and
-  of which rule removed a box. Changes are written to `parent/tuning.json` behind
-  the parent PIN and apply within a second. **Reset to shipped defaults** returns
-  to the floors below.
+  curtain hit counts and hold times, with a live "Last 60 s" list of the strongest
+  recent detections: one row per detection, showing its score against the class
+  floor, and whether it dropped a window cover, was covered, or which rule removed
+  it. Changes are written to `parent/tuning.json` behind the parent PIN and apply
+  within a second. **Reset to shipped defaults** returns to the floors below.
 - **Detection view:** outlines of what the model sees, over or instead of the
   covers, for a few minutes at a time, including weak detections below the
   blocking threshold.
