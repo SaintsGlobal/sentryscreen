@@ -591,6 +591,36 @@ struct UIDevTilesRow: View {
             Text(ZoomTilesCopy.noPass).uiFont(.caption2).foregroundStyle(.secondary)
                 .uiControl("\(Self.idPrefix).nopass", kind: .text, read: { ZoomTilesCopy.noPass })
         } else {
+            // Preview and Blur on one row ABOVE the drawings: under them
+            // they sat at the viewport's bottom edge, Blur under the
+            // "More below" fade (VM render 2026-10-20).
+            HStack(spacing: 14) {
+                Toggle(isOn: Binding(get: { tiles.preview }, set: { actions.setTilesPreview($0) })) {
+                    Text(ZoomTilesCopy.previewLabel).uiFont(.caption)
+                }
+                .toggleStyle(.checkbox)
+                .help(ZoomTilesCopy.previewCaption)
+                .uiControl("\(Self.idPrefix).preview", kind: .toggle,
+                    read: { tiles.preview ? "on" : "off" }, activate: { actions.setTilesPreview(!tiles.preview) })
+                // Its own view: a second id on the toggle replaced the toggle's
+                // accessibility identifier (live VM run, 2026-10-20).
+                .background(Color.clear.uiControl("\(Self.idPrefix).preview.state", kind: .text,
+                    read: { tiles.exclusion.rawValue }))
+                if tiles.preview {
+                    Toggle(isOn: Binding(get: { tiles.blur }, set: { tiles.setBlur($0) })) {
+                        Text(ZoomTilesCopy.blurLabel).uiFont(.caption)
+                    }
+                    .toggleStyle(.checkbox)
+                    .help(ZoomTilesCopy.blurCaption)
+                    .uiControl("\(Self.idPrefix).blur", kind: .toggle,
+                        read: { tiles.blur ? "on" : "off" }, activate: { tiles.setBlur(!tiles.blur) })
+                }
+                Spacer(minLength: 0)
+            }
+            if tiles.preview && tiles.exclusion != .confirmed {
+                Text(ZoomTilesCopy.waiting)
+                    .uiFont(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             // The four-up beside the picker, the zoomed tile under both: one
             // above the other at full width did not fit the popover's
             // viewport together, so checking a tile meant scrolling between
@@ -604,33 +634,6 @@ struct UIDevTilesRow: View {
             zoomed
             Text(ZoomTilesCopy.legend).uiFont(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Toggle(isOn: Binding(get: { tiles.preview }, set: { actions.setTilesPreview($0) })) {
-                Text(ZoomTilesCopy.previewLabel).uiFont(.caption)
-            }
-            .toggleStyle(.checkbox)
-            .help(ZoomTilesCopy.previewCaption)
-            .uiControl("\(Self.idPrefix).preview", kind: .toggle,
-                read: { tiles.preview ? "on" : "off" }, activate: { actions.setTilesPreview(!tiles.preview) })
-            // Its own view: a second id on the toggle replaced the toggle's
-            // accessibility identifier (live VM run, 2026-10-20).
-            .background(Color.clear.uiControl("\(Self.idPrefix).preview.state", kind: .text,
-                read: { tiles.exclusion.rawValue }))
-            if tiles.preview {
-                Toggle(isOn: Binding(get: { tiles.blur }, set: { tiles.setBlur($0) })) {
-                    Text(ZoomTilesCopy.blurLabel).uiFont(.caption)
-                }
-                .toggleStyle(.checkbox)
-                .help(ZoomTilesCopy.blurCaption)
-                .padding(.leading, 18)
-                .uiControl("\(Self.idPrefix).blur", kind: .toggle,
-                    read: { tiles.blur ? "on" : "off" }, activate: { tiles.setBlur(!tiles.blur) })
-                // Under the drawings, so a script scrolls here to show it.
-                .uiScrollAnchor("\(Self.idPrefix).blur")
-            }
-            if tiles.preview && tiles.exclusion != .confirmed {
-                Text(ZoomTilesCopy.waiting)
-                    .uiFont(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
         }
         if let why = tiles.refusal {
             UIInlineMessage(text: why, symbol: UISymbol.warning, tint: .systemOrange)

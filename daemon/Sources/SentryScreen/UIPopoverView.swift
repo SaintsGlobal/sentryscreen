@@ -737,7 +737,7 @@ struct UIPopoverView: View {
     /// footer (owner 2026-10-20: the one word fits there; "Remove
     /// SentryScreen…" did not), its own last row where there is no footer.
     private var uninstallLink: some View {
-        UIFooterButton(label: UninstallCopy.anywhereLabel, muted: true) { actions.beginUninstall() }
+        UIFooterButton(label: UninstallCopy.anywhereLabel) { actions.beginUninstall() }
             .uiControl("ui.uninstall", kind: .button,
                 read: { UninstallCopy.anywhereLabel },
                 activate: { actions.beginUninstall() })
