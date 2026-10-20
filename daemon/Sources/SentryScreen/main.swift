@@ -4020,7 +4020,7 @@ final class Pipeline {
             // `clearAll()` above took every curtain down; the exit summary
             // must not report one as still painted.
             self.logger.setActiveCovers(0)
-            self.logger.printSummary(elapsed: CFAbsoluteTimeGetCurrent() - startedAt)
+            self.logger.printFinalSummary()
         }
         if let tracker = windowTracker {
             let (polls, meanMs) = tracker.pollStats

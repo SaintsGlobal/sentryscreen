@@ -41,6 +41,7 @@ extension UISelfTest {
         zoomTilesPreviewGate()
         zoomTilesPreviewPIN(dir)
         zoomTilesPreviewPixels()
+        zoomTilesMapping()
     }
 
     private static func zoomTilesOutlines() {
@@ -241,6 +242,67 @@ extension UISelfTest {
         check("zoom preview: turning off never asks", !tuning.tiles.preview && actions.layer == .settings,
             "\(actions.layer)")
         try? fm.removeItem(atPath: root)
+    }
+
+    /// The owner's question (2026-10-20): does each tile show the part of
+    /// the screen it should? The demo's four-colour pattern through the
+    /// REAL region and render: near each tile's outer corner its thumbnail
+    /// is its own quadrant's colour, and its inner edge carries the 10 %
+    /// overlap (a sliver of the neighbour). Plus the zoomed view's words.
+    private static func zoomTilesMapping() {
+        guard let buffer = ZoomTilesDemo.pattern() else {
+            check("zoom mapping: the demo pattern builds", false); return
+        }
+        let ctx = CIContext()
+        func rgb(_ image: CGImage, _ fx: CGFloat, _ fy: CGFloat) -> (Double, Double, Double) {
+            var px = [UInt8](repeating: 0, count: 4)
+            let bm = CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            // Top-left fx, fy of the image onto the one pixel.
+            bm.draw(image, in: CGRect(x: -fx * CGFloat(image.width), y: -(1 - fy) * CGFloat(image.height),
+                width: CGFloat(image.width), height: CGFloat(image.height)))
+            return (Double(px[0]) / 255, Double(px[1]) / 255, Double(px[2]) / 255)
+        }
+        func nearest(_ c: (Double, Double, Double)) -> Int {
+            ZoomTilesDemo.quadrantColors.indices.min { a, b in
+                func d(_ i: Int) -> Double {
+                    let q = ZoomTilesDemo.quadrantColors[i].usingColorSpace(.sRGB)!
+                    return pow(c.0 - q.redComponent, 2) + pow(c.1 - q.greenComponent, 2) + pow(c.2 - q.blueComponent, 2)
+                }
+                return d(a) < d(b)
+            }!
+        }
+        var outer: [Int] = [], inner: [Int] = []
+        for i in 0..<ZoomTiles.count {
+            let region = ZoomTiles.region(index: i, width: ZoomTilesDemo.width, height: ZoomTilesDemo.height)
+            guard let img = TilePreview.render(buffer, region: region, blackout: [], context: ctx) else {
+                outer.append(-1); inner.append(-1); continue
+            }
+            let left = i % 2 == 0, top = i < 2
+            // 20 % in from the tile's outer corner: its own quadrant.
+            outer.append(nearest(rgb(img, left ? 0.2 : 0.8, top ? 0.2 : 0.8)))
+            // 1 % from the inner vertical edge, at the outer row: overlap.
+            inner.append(nearest(rgb(img, left ? 0.99 : 0.01, top ? 0.2 : 0.8)))
+        }
+        check("zoom mapping: each tile's thumbnail is its own quadrant (1 TL red, 2 TR green, 3 BL blue, 4 BR yellow)",
+            outer == [0, 1, 2, 3], "\(outer)")
+        check("zoom mapping: each tile's inner edge shows the neighbour across the 10 % overlap",
+            inner == [1, 0, 3, 2], "\(inner)")
+        let m = ZoomTilesMonitor()
+        ZoomTilesDemo.seed(m)
+        let s = m.snapshot()
+        check("zoom mapping: the demo seeds all four tiles, ending on tile 1 with a tile-only, a seen and a cut box",
+            s.tiles.allSatisfy { $0 != nil } && s.active == 0 && s.tiles[0]?.boxes.map(\.tileOnly) == [false, true]
+                && s.tiles[0]?.cut == 1, "\(String(describing: s.tiles[0]))")
+        check("zoom view: the line names the tile, where it is, the zoom and its boxes",
+            ZoomTilesCopy.zoomLine(0, s.tiles[0]) == "Tile 1, top left · 1.9× zoom · 2 boxes, 1 tile-only, 1 cut at the seam"
+                && ZoomTilesCopy.zoomLine(3, nil) == "Tile 4, bottom right: no pass yet"
+                && ZoomTilesCopy.zoomLine(3, s.tiles[3]) == "Tile 4, bottom right · 1.9× zoom · no boxes",
+            ZoomTilesCopy.zoomLine(0, s.tiles[0]))
+        let r0 = ZoomTiles.region(index: 0, width: 1280, height: 720)
+        check("zoom view: a tile keeps the screen's shape (2 × 2 of a 16:9 screen is 16:9)",
+            abs(UIDevTilesRow.tileAspect(r0, screen: 9.0 / 16.0) - 9.0 / 16.0) < 0.01,
+            "\(UIDevTilesRow.tileAspect(r0, screen: 9.0 / 16.0))")
     }
 
     private static func zoomTilesPreviewPixels() {

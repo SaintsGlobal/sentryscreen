@@ -877,6 +877,11 @@ final class UIActions: ObservableObject {
     /// The popover's window number while it is shown (UIStatusItem sets
     /// it): the window the Tiles preview draws in and asks capture to exclude.
     var popoverWindowNumber: () -> Int? = { nil }
+    /// A scroll anchor Settings returns to when it is next drawn. The PIN
+    /// layer replaces the sheet, which then reopens at its top: turning
+    /// the Tiles preview on landed the parent away from the thumbnails it
+    /// had just unlocked (live VM run, 2026-10-20).
+    var settingsReturnAnchor: String?
 
     /// TUNING TOOL: the Tiles row's "Show blurred preview" (ZoomTilesView.swift).
     /// On is behind the PIN — it puts screen pixels, however blurred, in the
@@ -887,6 +892,8 @@ final class UIActions: ObservableObject {
             tiles.turnOffPreview(reason: .user)
             return
         }
+        // Back at the row on success or cancel.
+        settingsReturnAnchor = UIDevTilesRow.idPrefix
         requirePIN(ZoomTilesCopy.pinPreview, returnTo: .settings) { [weak self] in
             tiles.turnOnPreview(window: self?.popoverWindowNumber())
         }
@@ -1205,7 +1212,14 @@ struct UISettingsPanelView: View {
                     // a scrolled General (VM render 2026-10-20).
                     .id(Self.pageTop)
                     .onChange(of: tab) { _, _ in proxy.scrollTo(Self.pageTop, anchor: .top) }
-                    .onAppear { UIScrollAnchors.shared.proxy = proxy }
+                    .onAppear {
+                        UIScrollAnchors.shared.proxy = proxy
+                        if let anchor = actions.settingsReturnAnchor {
+                            actions.settingsReturnAnchor = nil
+                            // Next turn: the page's rows are laid out by then.
+                            DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+                        }
+                    }
                     .onDisappear { UIScrollAnchors.shared.proxy = nil }
                     // Page height, for the driver's `assertfits` fold report.
                     .background(GeometryReader { proxy in

@@ -398,13 +398,33 @@ enum ZoomTilesCopy {
     static let event = "tiles-preview"
     static let rowTitle = "Tiles"
     static let rowCaption = "What the zoom pass ran and found. Outlines only; no pixels."
+    /// With the preview showing thumbnails, "no pixels" is no longer true.
+    static let rowCaptionPreview = "What the zoom pass ran and found, over blurred tiles of the screen."
+    static func caption(previewShowing: Bool) -> String { previewShowing ? rowCaptionPreview : rowCaption }
     static let previewLabel = "Show blurred preview"
     static let previewCaption = "Blurred thumbnails with every blocked box filled black. Behind the PIN; "
         + "off when the popover closes."
     static let pinPreview = "Show blurred tile previews in the Developer tab."
     static let waiting = "Waiting for capture to exclude this window…"
     static let noPass = "No tile pass yet."
-    static let legend = "Solid: found by the tile only. Dashed: the full frame found it too."
+    static let legend = "Solid box: found by the tile only. Dashed box: the full frame found it too. "
+        + "Solid tile: the one that ran last; dashed tile: the one zoomed below."
+    static let zoomTitle = "Zoomed tile"
+    static let tileNames = ["top left", "top right", "bottom left", "bottom right"]
+
+    /// "Tile 1, top left · 1.9× zoom · 2 boxes, 1 tile-only". Zoom is per
+    /// axis against the full pass, which sees the whole frame at the same
+    /// model size (`ZoomTiles.grid` receipt: 674 px of 1280 is 1.9×).
+    static func zoomLine(_ i: Int, _ p: ZoomTilePass?) -> String {
+        let name = tileNames.indices.contains(i) ? tileNames[i] : "tile"
+        let head = "Tile \(i + 1), \(name)"
+        guard let p, p.region.width > 0 else { return head + ": no pass yet" }
+        let only = p.boxes.filter(\.tileOnly).count
+        let boxes = p.boxes.isEmpty
+            ? "no boxes" : "\(p.boxes.count) box\(p.boxes.count == 1 ? "" : "es"), \(only) tile-only"
+        return head + " · \(String(format: "%.1f", 1 / Double(p.region.width)))× zoom · " + boxes
+            + (p.cut > 0 ? ", \(p.cut) cut at the seam" : "")
+    }
     static let refusedNoPipeline = "No capture is running."
     static let refusedNoWindow = "The popover's window is not on screen."
     static func refusedExclusion(budget: Int) -> String {
@@ -435,6 +455,8 @@ struct UIDevTilesRow: View {
     @ObservedObject var tiles: UIDevTiles
 
     static let idPrefix = "\(UIDeveloperSettingsSection.idPrefix).tiles"
+    /// The tile the zoomed view shows (index; the picker reads 1–4).
+    @State private var zoomTile = 0
 
     /// The main display's aspect (height / width); 9:16 when unknown.
     private var aspect: CGFloat {
@@ -474,7 +496,8 @@ struct UIDevTilesRow: View {
     /// legend; the per-tile lines are the drawing's VoiceOver label and the
     /// scripts' `tiles.N` reads, not more text under it.
     @ViewBuilder private var content: some View {
-        Text(ZoomTilesCopy.rowCaption).uiFont(.caption2).foregroundStyle(.secondary)
+        Text(ZoomTilesCopy.caption(previewShowing: tiles.preview && tiles.exclusion == .confirmed))
+            .uiFont(.caption2).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         if tiles.snapshot.passes == 0 {
             Text(ZoomTilesCopy.noPass).uiFont(.caption2).foregroundStyle(.secondary)
@@ -483,6 +506,7 @@ struct UIDevTilesRow: View {
             drawing
             Text(ZoomTilesCopy.legend).uiFont(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            zoomed
             Toggle(isOn: Binding(get: { tiles.preview }, set: { actions.setTilesPreview($0) })) {
                 Text(ZoomTilesCopy.previewLabel).uiFont(.caption)
             }
@@ -490,7 +514,10 @@ struct UIDevTilesRow: View {
             .help(ZoomTilesCopy.previewCaption)
             .uiControl("\(Self.idPrefix).preview", kind: .toggle,
                 read: { tiles.preview ? "on" : "off" }, activate: { actions.setTilesPreview(!tiles.preview) })
-            .uiControl("\(Self.idPrefix).preview.state", kind: .text, read: { tiles.exclusion.rawValue })
+            // Its own view: a second id on the toggle replaced the toggle's
+            // accessibility identifier (live VM run, 2026-10-20).
+            .background(Color.clear.uiControl("\(Self.idPrefix).preview.state", kind: .text,
+                read: { tiles.exclusion.rawValue }))
             if tiles.preview && tiles.exclusion != .confirmed {
                 Text(ZoomTilesCopy.waiting)
                     .uiFont(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -500,6 +527,78 @@ struct UIDevTilesRow: View {
             UIInlineMessage(text: why, symbol: UISymbol.warning, tint: .systemOrange)
                 .uiControl("\(Self.idPrefix).refusal", kind: .text, read: { tiles.refusal ?? "" })
         }
+    }
+
+    /// One tile at the column's full width: what the detector was given
+    /// for it, at the tile's own aspect, with its boxes in tile space and,
+    /// with the preview on, its thumbnail. The four-up drawing shows WHERE
+    /// each tile is; this shows WHAT is in it, large enough to check that
+    /// the zoom landed on the part of the screen it should (owner
+    /// 2026-10-20). A chosen tile, not the live one: the rotation moves on
+    /// every evaluated frame, faster than anyone reads.
+    private var zoomed: some View {
+        let i = zoomTile
+        let pass = tiles.snapshot.tiles[i]
+        let region = pass?.region ?? Self.quadrant(i)
+        let line = ZoomTilesCopy.zoomLine(i, pass)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(ZoomTilesCopy.zoomTitle).uiFont(.caption).fontWeight(.semibold)
+                Spacer(minLength: 0)
+                Picker(ZoomTilesCopy.zoomTitle, selection: $zoomTile) {
+                    ForEach(0..<ZoomTiles.count, id: \.self) { Text("\($0 + 1)").tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .uiControl("\(Self.idPrefix).zoom", kind: .picker, read: { "\(zoomTile + 1)" },
+                    setText: { raw in if let n = Int(raw), (1...ZoomTiles.count).contains(n) { zoomTile = n - 1 } })
+            }
+            GeometryReader { g in
+                Canvas { ctx, size in drawZoom(&ctx, size, tile: i) }
+                    .frame(width: g.size.width, height: g.size.width * Self.tileAspect(region, screen: aspect))
+            }
+            .aspectRatio(1 / Self.tileAspect(region, screen: aspect), contentMode: .fit)
+            .accessibilityElement()
+            .accessibilityLabel(line)
+            Text(line).uiFont(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).zoom.line", kind: .text, read: {
+                    ZoomTilesCopy.zoomLine(zoomTile, tiles.snapshot.tiles[zoomTile])
+                })
+        }
+        .padding(.top, 2)
+    }
+
+    /// Height / width of a tile on screen: its normalized region times the
+    /// screen's own aspect.
+    static func tileAspect(_ region: CGRect, screen: CGFloat) -> CGFloat {
+        region.width > 0 ? region.height * screen / region.width : screen
+    }
+
+    private func drawZoom(_ ctx: inout GraphicsContext, _ size: CGSize, tile i: Int) {
+        let frame = CGRect(origin: .zero, size: size)
+        ctx.fill(Path(frame), with: .color(SentryColor.paper))
+        guard let p = tiles.snapshot.tiles[i] else {
+            ctx.draw(Text(ZoomTilesCopy.noPass).font(.caption2).foregroundColor(.secondary),
+                at: CGPoint(x: size.width / 2, y: size.height / 2))
+            ctx.stroke(Path(frame), with: .color(.secondary), lineWidth: 1)
+            return
+        }
+        if tiles.exclusion == .confirmed, let image = tiles.images[i] {
+            ctx.draw(Image(decorative: image, scale: 1), in: frame)
+        }
+        let r0 = p.region
+        for b in p.boxes {
+            let r = CGRect(x: (b.rect.minX - r0.minX) / r0.width * size.width,
+                y: (b.rect.minY - r0.minY) / r0.height * size.height,
+                width: b.rect.width / r0.width * size.width, height: b.rect.height / r0.height * size.height)
+            let ink = b.tileOnly ? SentryColor.primary : Color.secondary
+            ctx.stroke(Path(r), with: .color(ink), style: StrokeStyle(lineWidth: 2, dash: b.tileOnly ? [] : [4, 3]))
+            Self.label(&ctx, ZoomTilesCopy.boxLabel(b), size: 10, ink: ink, at: CGPoint(x: r.minX, y: r.minY - 1))
+        }
+        ctx.stroke(Path(frame), with: .color(SentryColor.accent), lineWidth: 2)
     }
 
     private var drawing: some View {
@@ -549,17 +648,32 @@ struct UIDevTilesRow: View {
             ctx.stroke(Path(pts(region)), with: .color(active ? SentryColor.accent : .secondary),
                 lineWidth: active ? 2 : 0.5)
         }
+        // The tile the zoomed view shows, dashed: the solid outline is the
+        // tile that ran last, which moves on every frame.
+        let picked = s.tiles[zoomTile]?.region ?? Self.quadrant(zoomTile)
+        ctx.stroke(Path(pts(picked).insetBy(dx: 1.5, dy: 1.5)), with: .color(SentryColor.ink),
+            style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
         for p in s.tiles.compactMap({ $0 }) {
             for b in p.boxes {
                 let r = pts(b.rect)
                 let ink = b.tileOnly ? SentryColor.primary : Color.secondary
                 ctx.stroke(Path(r), with: .color(ink),
                     style: StrokeStyle(lineWidth: 1.5, dash: b.tileOnly ? [] : [3, 2]))
-                ctx.draw(Text(ZoomTilesCopy.boxLabel(b)).font(.system(size: 8, design: .monospaced))
-                    .foregroundColor(ink), at: CGPoint(x: r.minX + 1, y: r.minY - 1), anchor: .bottomLeading)
+                Self.label(&ctx, ZoomTilesCopy.boxLabel(b), size: 8, ink: ink, at: CGPoint(x: r.minX, y: r.minY - 1))
             }
         }
         ctx.stroke(Path(frame), with: .color(.secondary), lineWidth: 1)
+    }
+
+    /// A box label on a paper backing, so it reads over any thumbnail
+    /// colour (gold on the yellow quadrant was all but invisible).
+    static func label(_ ctx: inout GraphicsContext, _ text: String, size: CGFloat, ink: Color, at p: CGPoint) {
+        let t = ctx.resolve(Text(text).font(.system(size: size, weight: .semibold, design: .monospaced))
+            .foregroundColor(ink))
+        let s = t.measure(in: CGSize(width: 400, height: 100))
+        let back = CGRect(x: p.x, y: p.y - s.height, width: s.width + 4, height: s.height)
+        ctx.fill(Path(roundedRect: back, cornerRadius: 2), with: .color(SentryColor.paper.opacity(0.85)))
+        ctx.draw(t, at: CGPoint(x: p.x + 2, y: p.y), anchor: .bottomLeading)
     }
 
     /// Before the first pass: the plain quadrant, top-left origin.

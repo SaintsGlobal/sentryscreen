@@ -3488,6 +3488,20 @@ enum UISelfTest {
             curtain.activeIDs.isEmpty && first == 0 && lastSummaryCovers() == 0,
             "active=\(curtain.activeIDs) first=\(String(describing: first)) "
                 + "next=\(String(describing: lastSummaryCovers()))")
+
+        // The exit summary folds the open window's samples like a 60 s close.
+        logger.count("zoomTilePasses")
+        logger.sample("zoomPassMs", 12)
+        logger.sample("zoomPassMs", 14)
+        logger.printFinalSummary()
+        let exitRow: [String: Any]? = fm.contents(atPath: path).flatMap { bytes in
+            bytes.split(separator: 10).compactMap {
+                try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]
+            }.last { $0["event"] as? String == "summary" }
+        }
+        let exitCounters = exitRow?["counters"] as? [String: Any]
+        check("exit summary: the last window carries its sample percentiles (zoomPassMsP50)",
+            exitCounters?["zoomPassMsP50"] as? Int == 14, "\(String(describing: exitCounters))")
     }
 
     // MARK: 7c1 — capture-time attribution (owner report 2026-09-09)

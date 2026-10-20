@@ -34,6 +34,15 @@
 - The popover and the Setup window now say "Remove SentryScreen…", as Settings
   does. With no PIN set, Settings offers "Set a PIN…" (not "Change PIN…" and
   "Forgot PIN?") and says that changes ask you to set one.
+- The Developer tab's Tiles view has a **Zoomed tile** view: pick tile 1–4 and see
+  it at full width, with its boxes and, with the blurred preview on, its
+  thumbnail, plus where it is and how far it zooms (about 1.9×). It is for
+  checking that the zoom pass looks at the part of the screen it should. The
+  four-up drawing outlines the zoomed tile dashed, and box labels sit on a backing
+  so they read over any thumbnail. Turning the preview on returns you to the Tiles
+  row after the PIN.
+- The exit summary in the log now covers the whole run, including the last
+  partial minute.
 - Window covers now say "Content blocked — click the title bar, then press ⌘W".
   Covers let clicks through, so the old "click here" sent the click to the covered
   content itself. The title bar is never covered, so clicking it only brings the

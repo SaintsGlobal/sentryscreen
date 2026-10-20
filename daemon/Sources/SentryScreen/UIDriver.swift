@@ -40,6 +40,7 @@ struct DemoState: Equatable {
     /// tab's 60 s readout with injected detections and a curtain drop so a
     /// render shows the panel populated. Ignored by a production demo.
     var readoutSample = false
+    var tilesSample = false
     /// `screenrecording off`: what CGPreflightScreenCaptureAccess reports in
     /// production (AppDelegate publishes it on every health change). Its own
     /// axis, not a `health` value, because it only picks which sentence the
@@ -167,9 +168,12 @@ struct DemoState: Equatable {
         case "readout":
             guard value == "sample" || value == "empty" else { return "readout must be sample|empty" }
             readoutSample = value == "sample"
+        case "tiles":
+            guard value == "sample" || value == "empty" else { return "tiles must be sample|empty" }
+            tilesSample = value == "sample"
         default:
             return "unknown state key '\(key)' "
-                + "(health|paused|policy|pin|activity|admin|icon|devstate|hotkey|screenrecording|detector|displays|displayconnected|resuming|diagnostics|readout)"
+                + "(health|paused|policy|pin|activity|admin|icon|devstate|hotkey|screenrecording|detector|displays|displayconnected|resuming|diagnostics|readout|tiles)"
         }
         return nil
     }
@@ -1087,6 +1091,17 @@ final class UIDemoController {
 
     private var devTuning: UIDevTuning?
     private var devTuningSignature: TuningFile.Signature?
+    /// `state tiles sample` (ZoomTilesDemo.swift): capture's stand-in,
+    /// attached once; the passes are seeded with it.
+    private var tilesHost: ZoomTilesDemoHost?
+
+    private func applyTiles() {
+        guard demo.tilesSample, tilesHost == nil, let t = devTuning else { return }
+        let host = ZoomTilesDemoHost(blackout: ZoomTilesDemo.seed(t.tiles.monitor))
+        tilesHost = host
+        t.tiles.attach(host)
+        t.tiles.poll()
+    }
     /// `state readout sample`: what a curtain-tripping screen feeds the
     /// readout in one frame, at the sizes the false-positive receipt names
     /// (`ClassRule.minBoxFraction`: 15–68 px boxes), plus one drop.
@@ -1166,6 +1181,7 @@ final class UIDemoController {
         state.setRecentEvents(demo.activityItems())
         actions.showDemoSendState(demo.sendNotice)
         applyReadout()
+        applyTiles()
         var err: String?
         do {
             try store.parentPINAuthority.mutate { $0 = demo.parentPINState() }
