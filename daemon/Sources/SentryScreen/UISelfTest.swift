@@ -4209,6 +4209,20 @@ enum UISelfTest {
             RegionLayer.labelText(forWidth: hint.width + pad - 1, height: 626, curtain: true) == "Content blocked")
         check("cover label: the hint says ⌘W, never ⌘Q",
             RegionLayer.curtainHint.contains("⌘W") && !RegionLayer.curtainHint.contains("⌘Q"))
+        // Copy 2026-10-20: the click goes to the title bar, never "here" —
+        // a click on a click-through cover lands on the covered content.
+        check("cover label: the hint sends the click to the title bar, never \"click here\"",
+            RegionLayer.curtainHint == "Content blocked — click the title bar, then press ⌘W"
+                && !RegionLayer.curtainHint.contains("click here"))
+        print(String(format: "# cover label: curtain hint measures %.1f x %.1f pt at 13 pt medium; "
+            + "a curtain shows it from %.1f pt wide", hint.width, hint.height, hint.width + pad))
+        // MEASURED 2026-10-20 (this build, 13 pt medium system font): 324.6 x
+        // 16.0 pt, shown from 332.6 pt wide. ±25 pt absorbs font revisions;
+        // past it the copy changed and this receipt must be redone.
+        check("cover label: the hint measures 300–350 pt wide at 13 pt medium (324.6 measured) and shows at exactly its width plus margin",
+            (300...350).contains(hint.width)
+                && RegionLayer.labelText(forWidth: hint.width + pad, height: 626, curtain: true) == RegionLayer.curtainHint,
+            "hint=\(hint)")
         var curtainInside = true
         for w in stride(from: 20, through: 800, by: 1) {
             if let text = RegionLayer.labelText(forWidth: CGFloat(w), height: 129, curtain: true),

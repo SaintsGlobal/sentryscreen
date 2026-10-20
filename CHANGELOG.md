@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Window covers now say "Content blocked — click the title bar, then press ⌘W".
+  Covers let clicks through, so the old "click here" sent the click to the covered
+  content itself. The title bar is never covered, so clicking it only brings the
+  window to the front.
+
 ## 0.4.2 (build 29)
 
 Security follow-ups from the 0.4.1 review.
