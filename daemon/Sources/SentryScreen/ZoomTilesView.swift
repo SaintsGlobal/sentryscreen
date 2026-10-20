@@ -624,6 +624,8 @@ struct UIDevTilesRow: View {
                 .padding(.leading, 18)
                 .uiControl("\(Self.idPrefix).blur", kind: .toggle,
                     read: { tiles.blur ? "on" : "off" }, activate: { tiles.setBlur(!tiles.blur) })
+                // Under the drawings, so a script scrolls here to show it.
+                .uiScrollAnchor("\(Self.idPrefix).blur")
             }
             if tiles.preview && tiles.exclusion != .confirmed {
                 Text(ZoomTilesCopy.waiting)
