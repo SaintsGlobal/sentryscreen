@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `--print-tuning`, the tuning log record, `parent/tuning.json` and the Developer
+  tab's Copy now write numbers as short decimals (`0.7`, not
+  `0.69999999999999996`). The values are unchanged.
 - New default block floors for the exposed classes, on the model's 0–1 score:
   female breast 0.90, female genitalia 0.70, male genitalia 0.90, buttocks 0.80,
   anus 0.70 (all were 0.50). The covered classes stay at 0.60, and an exposed box

@@ -110,6 +110,24 @@ extension UISelfTest {
         }
         check("tuning: jsonString is one sorted line",
             !d.jsonString().contains("\n") && d.jsonString().hasPrefix("{\"classes\":"), d.jsonString())
+        // Shortest decimals (2026-10-20): 0.7, never 0.69999999999999996.
+        let dumped = d.jsonString()
+        check("tuning: the dump writes floats as short decimals",
+            dumped.contains("\"threshold\":0.7") && dumped.contains("\"coveredOverlap\":0.9")
+                && !dumped.contains("99999") && !dumped.contains("00000000"), dumped)
+        // INJECT_TEST is dumped but refused by the parser by design; the
+        // Developer tab strips it the same way (`UIDevTuning.configObject`).
+        var obj = (try? JSONSerialization.jsonObject(with: Data(dumped.utf8))) as? [String: Any] ?? [:]
+        if var classes = obj["classes"] as? [String: Any] {
+            classes.removeValue(forKey: TuningPolicy.injectLabel)
+            obj["classes"] = classes
+        }
+        if case let .success(back) = TuningPolicy.parse(obj, base: d) {
+            check("tuning: the short-decimal dump parses back to the same policy",
+                back.jsonString() == dumped && back.standard["ANUS_EXPOSED"]?.threshold == d.standard["ANUS_EXPOSED"]?.threshold)
+        } else {
+            check("tuning: the short-decimal dump parses back to the same policy", false, dumped)
+        }
 
         // --- 2. config override: accepted by key, refused by key ---
         let over: [String: Any] = [

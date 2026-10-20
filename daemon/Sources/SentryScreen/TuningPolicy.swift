@@ -744,7 +744,11 @@ struct TuningPolicy: Equatable {
 
     var jsonObject: [String: Any] {
         // Six decimals: a Float threshold prints as 0.6, not 0.600000023841.
-        func f(_ x: Double) -> Double { (x * 1e6).rounded() / 1e6 }
+        // As a decimal NUMBER (2026-10-20, owner: "fix it"): JSONSerialization
+        // prints a Double with 17 significant digits (0.69999999999999996);
+        // an NSDecimalNumber made from Swift's shortest round-trip text
+        // prints exactly that text (0.7) and parses back to the same Double.
+        func f(_ x: Double) -> NSNumber { NSDecimalNumber(string: "\((x * 1e6).rounded() / 1e6)") }
         func cls(_ r: ClassRule) -> [String: Any] {
             var o: [String: Any] = [
                 "threshold": f(Double(r.threshold)), "minBoxFraction": f(r.minBoxFraction),
