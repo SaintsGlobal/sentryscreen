@@ -8,8 +8,8 @@ network. It is sent once, only when the Mac's owner chooses to send it.
 Never automatically. There are no background, scheduled, crash-triggered or
 error-triggered sends, no queue and no retries.
 
-1. Open Settings, open **More settings** on the General page, and press
-   **Review Report**.
+1. Open Settings and, under **Parent** on the General page, press
+   **Diagnostic report…**.
 2. If a parent PIN is set, enter it.
 3. SentryScreen says what a report contains and what it never contains, then
    builds the report and shows all of it, exactly as it will be sent.

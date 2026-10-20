@@ -10,7 +10,7 @@ extension UISelfTest {
     /// the privacy promise and the send status live on the review, and Send
     /// is offered once per review. Pure: no agent, no network.
     static func caseDiagnosticsReviewCopy() {
-        check("diagnostics: the Settings link reads \"Review Report\"", DiagnosticsCopy.review == "Review Report")
+        check("diagnostics: the Settings row reads \"Diagnostic report…\"", DiagnosticsCopy.review == "Diagnostic report…")
         let promise = DiagnosticsCopy.reviewPromise
         check("diagnostics: the review's promise carries every \"What is sent\" line, then the never-sent line",
             promise == DiagnosticsCopy.disclosureLines + [DiagnosticsCopy.disclosureNever]

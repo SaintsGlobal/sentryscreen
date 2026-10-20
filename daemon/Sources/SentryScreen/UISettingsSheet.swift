@@ -244,11 +244,28 @@ final class UIActions: ObservableObject {
     /// until a page is shown: the panel then starts on
     /// `.general`.
     @Published var settingsTab: UISettingsTab?
-    /// Whether General's "More settings" fold is open (Settings-General,
-    /// Settings-App boards). Held here for the `settingsTab` reason: Change
-    /// PIN goes through a PIN prompt and must
-    /// land back on the open fold. Shut on every `openSettings()`.
-    @Published var moreSettingsOpen = false
+    /// The Developer tab passed the PIN (owner 2026-10-20: the tab itself is
+    /// behind it). Until the popover closes (`lock()`), the tab shows without
+    /// asking and its own changes run without asking again.
+    @Published private(set) var developerUnlocked = false
+    static let developerPin = "Open the Developer tab."
+
+    /// The one way onto the Developer tab: a tap, a script's `tap` or
+    /// `setText`, all go through here. Locked ⇒ the PIN first (or Set a PIN
+    /// with none), and the tab opens only once it passes; a wrong PIN or a
+    /// cancel leaves the page that was showing.
+    func showSettingsTab(_ tab: UISettingsTab) {
+        guard tab == .developer, !developerUnlocked else {
+            settingsTab = tab
+            return
+        }
+        requirePIN(Self.developerPin, returnTo: .settings) { [weak self] in
+            guard let self else { return }
+            developerUnlocked = true
+            settingsTab = .developer
+            log("pin", "developer tab unlocked until the popover closes")
+        }
+    }
     /// Where the removal has got to. `.idle` while the confirmation is still
     /// a question.
     @Published private(set) var removeStage: UninstallGate.Stage = .idle
@@ -316,7 +333,7 @@ final class UIActions: ObservableObject {
         log("uninstall", "stage=cancelled at the confirmation — nothing was changed")
     }
 
-    /// The popover footer's "Remove SentryScreen…", drawn in every popover
+    /// The popover footer's "Uninstall…", drawn in every popover
     /// state (owner 2026-10-16: someone stuck in a bug, such as a permission
     /// loop, must always be able to remove the app). The parent PIN is asked
     /// first when one is set; then the same card and Uninstaller as Settings.
@@ -327,7 +344,7 @@ final class UIActions: ObservableObject {
         }
     }
 
-    /// The Setup window's "Remove SentryScreen…". That window has no PIN
+    /// The Setup window's "Uninstall…". That window has no PIN
     /// keypad, so a set PIN is asked for in a plain alert and checked by the
     /// same `PinGate` (same lockout). Then the Uninstaller runs with the
     /// default choice (complete removal); its admin prompt is the last step.
@@ -442,12 +459,23 @@ final class UIActions: ObservableObject {
     /// The one wrapper (Addendum 6F). No PIN set ⇒ the set-PIN layer opens
     /// first and `body` runs on save (§4.3: until a PIN exists no mutation is
     /// possible, including by someone who is not the parent).
+    /// `developer`: a change made on the Developer tab, which runs without a
+    /// prompt while the tab is unlocked (`developerUnlocked`).
     func requirePIN(
         _ confirmation: String, note: String? = nil, returnTo: Layer = .none,
+        developer: Bool = false,
         onDrop: (() -> Void)? = nil,
         _ body: @escaping () -> Void
     ) {
         writeError = nil
+        if developer, developerUnlocked, store.parentPIN != nil {
+            let dropped = pending?.onDrop
+            pending = nil
+            dropped?()
+            layer = returnTo
+            body()
+            return
+        }
         returnLayer = returnTo
         let replaced = pending?.onDrop
         pending = Pending(confirmation: confirmation, note: note, body: body, onDrop: onDrop)
@@ -523,7 +551,6 @@ final class UIActions: ObservableObject {
     func openSettings() {
         writeError = nil
         settingsTab = nil
-        moreSettingsOpen = false
         layer = .settings
         returnLayer = .none
     }
@@ -555,6 +582,7 @@ final class UIActions: ObservableObject {
         pinError = nil
         setPinError = nil
         unlockedUntil = nil
+        developerUnlocked = false
         // The dropped completion will never clear this, so a close/reopen
         // mid-derivation must not leave the field disabled forever.
         busy = false
@@ -567,7 +595,11 @@ final class UIActions: ObservableObject {
     /// they came from is restored after the reset.
     func cancelLayer() {
         let back = returnLayer
+        // Cancelling a later prompt does not re-lock a Developer tab the
+        // parent already opened; the popover closing does.
+        let developer = developerUnlocked
         lock()
+        developerUnlocked = developer
         layer = back
     }
 
@@ -815,7 +847,7 @@ final class UIActions: ObservableObject {
     /// (Addendum 6F). One PIN unlocks the usual window, so a tuning session
     /// types it once.
     func commitDevTuning() {
-        requirePIN("Apply the curtain tuning.", returnTo: .settings) { [weak self] in
+        requirePIN("Apply the curtain tuning.", returnTo: .settings, developer: true) { [weak self] in
             self?.devTuning?.writeFile()
         }
     }
@@ -823,7 +855,7 @@ final class UIActions: ObservableObject {
     /// "Reset to shipped defaults": removes the file; the agent returns to
     /// the launch policy and logs it.
     func resetDevTuning() {
-        requirePIN("Reset the curtain tuning to the launch policy.", returnTo: .settings) { [weak self] in
+        requirePIN("Reset the curtain tuning to the launch policy.", returnTo: .settings, developer: true) { [weak self] in
             self?.devTuning?.reset()
         }
     }
@@ -849,13 +881,13 @@ final class UIActions: ObservableObject {
         }
         requirePIN(DetectionViewCopy.pinTurnOn(mode),
             note: mode == .detectionsOnly ? DetectionViewCopy.pinTurnOnNote : nil,
-            returnTo: returnTo) { [weak self] in
+            returnTo: returnTo, developer: returnTo == .settings) { [weak self] in
             self?.detectionView.turnOn(mode)
         }
     }
 
     func renewDetectionView(returnTo: Layer) {
-        requirePIN(DetectionViewCopy.pinRenew, returnTo: returnTo) { [weak self] in
+        requirePIN(DetectionViewCopy.pinRenew, returnTo: returnTo, developer: returnTo == .settings) { [weak self] in
             self?.detectionView.renew()
         }
     }
@@ -867,7 +899,7 @@ final class UIActions: ObservableObject {
             detectionView.setSynthetic(false)
             return
         }
-        requirePIN(DetectionViewCopy.pinSynthetic, returnTo: .settings) { [weak self] in
+        requirePIN(DetectionViewCopy.pinSynthetic, returnTo: .settings, developer: true) { [weak self] in
             self?.detectionView.setSynthetic(true)
         }
     }
@@ -894,7 +926,7 @@ final class UIActions: ObservableObject {
         }
         // Back at the row on success or cancel.
         settingsReturnAnchor = UIDevTilesRow.idPrefix
-        requirePIN(ZoomTilesCopy.pinPreview, returnTo: .settings) { [weak self] in
+        requirePIN(ZoomTilesCopy.pinPreview, returnTo: .settings, developer: true) { [weak self] in
             tiles.turnOnPreview(window: self?.popoverWindowNumber())
         }
     }
@@ -1330,8 +1362,7 @@ struct UISettingsPanelView: View {
             // same `actions.setPolicy` path, drawn as two described rows.
             UISettingsSensitivitySection(state: state, actions: actions)
             UIActivitySettingsSection(activity: activity)
-            moreSettingsToggle
-            if actions.moreSettingsOpen { moreSettings }
+            parent
         case .developer:
             if let tuning = actions.devTuning {
                 UIDeveloperSettingsSection(state: state, actions: actions, tuning: tuning)
@@ -1345,61 +1376,32 @@ struct UISettingsPanelView: View {
         }
     }
 
-    /// Settings-General board, verbatim.
-    static let moreTitle = "More settings"
-    /// 2026-10-20: "menu bar icon" left with the Show menu bar icon row;
-    /// the caption names what the fold still holds.
-    static let moreCaption = "PIN, diagnostics, remove"
+    /// "PARENT": the owner's choice among three General mockups (A,
+    /// 2026-10-20). The "More settings" fold and the separate Version,
+    /// Review Report and Remove cards became one card of three rows under
+    /// Recent activity, like it, so General has no fold: PIN, the diagnostic
+    /// report and Uninstall are always one tap away. Forgot PIN? moved into
+    /// the Enter PIN layer (`UIPinKeypadView`), the one place it is needed;
+    /// Version moved into the bottom row beside the wordmark
+    /// (`UIPopoverView.body`).
+    static let parentLabel = "Parent"
 
-    /// The fold's header: an outlined row with a chevron. Closed, it carries
-    /// the caption naming what is inside; open, only the title.
-    private var moreSettingsToggle: some View {
-        let open = actions.moreSettingsOpen
-        let toggle = { [actions] in actions.moreSettingsOpen.toggle() }
-        return Button(action: toggle) {
-            HStack(spacing: 10) {
-                Image(systemName: open ? "chevron.down" : "chevron.right")
-                    .uiFont(.caption, weight: .bold)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(Self.moreTitle).uiFont(.subheadline, weight: .semibold)
-                    if !open {
-                        Text(Self.moreCaption).uiFont(.caption).foregroundStyle(SentryColor.muted)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(SentryColor.ink)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(minHeight: open ? 40 : 46)
-            .contentShape(Rectangle())
-            .overlay(UIPopoverShape.hand(12, 10, 13, 9).strokeBorder(SentryColor.controlBorder, lineWidth: 2))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Self.moreTitle)
-        .accessibilityValue(open ? "Expanded" : "Collapsed")
-        .uiControl("ui.settings.more", kind: .button,
-            read: { [actions] in actions.moreSettingsOpen ? "open" : "closed" }, activate: toggle)
-    }
-
-    /// The old App page's rows, unchanged, under the fold.
-    @ViewBuilder private var moreSettings: some View {
+    private var parent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            UISettingsSectionLabel(text: Self.parentLabel)
             UISection(padding: 0) {
                 VStack(spacing: 0) {
                     changePIN
                     rowDivider
-                    // Nothing to forget before a PIN is set.
-                    if actions.store.parentPIN != nil {
-                        forgotPIN
+                    diagnosticReport
+                    if state.isAdmin {
                         rowDivider
+                        remove
                     }
-                    version
                 }
                 .padding(.vertical, 4)
             }
-            UIDiagnosticsSettingsSection(actions: actions)
-            remove
+        }
     }
 
     /// The page switcher, drawn as the Settings-General board draws it: an
@@ -1413,8 +1415,9 @@ struct UISettingsPanelView: View {
     private var tabs: some View {
         let sel = Binding<UISettingsTab>(
             get: { [actions, state] in actions.settingsTab ?? UISettingsTab.initial },
-            set: { [actions] in actions.settingsTab = $0 })
-        return UISettingsTabBar(selection: sel)
+            // Developer goes through the PIN (`showSettingsTab`).
+            set: { [actions] in actions.showSettingsTab($0) })
+        return UISettingsTabBar(selection: sel, developerLocked: !actions.developerUnlocked)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Self.tabPickerLabel)
         .uiControl("ui.settings.tab", kind: .picker,
@@ -1433,7 +1436,7 @@ struct UISettingsPanelView: View {
         Divider().padding(.leading, UIMetrics.sectionPadding)
     }
 
-    /// "Remove SentryScreen…" (SPEC §8.1(7); owner 2026-09-05).
+    /// "Uninstall…" (SPEC §8.1(7); owner 2026-09-05).
     ///
     /// ABSENT — not disabled — outside an administrator session. A disabled
     /// row advertises the removal to the child it is protecting the family
@@ -1441,30 +1444,18 @@ struct UISettingsPanelView: View {
     /// there says nothing. The same rule the status item itself follows
     /// (`main.swift`: a Standard session gets no status item at all).
     ///
-    /// Last in the sheet because it is the
-    /// end of the relationship with the app and nothing below it would be
-    /// read afterwards.
-    @ViewBuilder private var remove: some View {
-        if state.isAdmin {
-            UISection(padding: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    UIListRow(label: UninstallCopy.row) { actions.beginRemove() }
-                        .uiControl("ui.settings.remove", kind: .button,
-                            read: { UninstallCopy.row },
-                            activate: { actions.beginRemove() })
-                    Text(Self.removeCaption)
-                        .uiFont(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, UIMetrics.sectionPadding)
-                        .padding(.bottom, 8)
-                        .uiControl("ui.settings.remove.caption", kind: .text,
-                            read: { Self.removeCaption })
-                }
-                .padding(.vertical, 4)
-            }
-            .uiScrollAnchor("ui.settings.remove")
+    /// Last in the Parent card because it is the end of the relationship
+    /// with the app. Accent ink, and no caption: the confirmation card says
+    /// it needs an admin password (`UninstallCopy.body`), before anything
+    /// runs.
+    private var remove: some View {
+        UIListRow(label: UninstallCopy.row, symbol: Self.removeSymbol, tint: SentryColor.accent) {
+            actions.beginRemove()
         }
+        .uiControl("ui.settings.remove", kind: .button,
+            read: { UninstallCopy.row },
+            activate: { actions.beginRemove() })
+        .uiScrollAnchor("ui.settings.remove")
     }
 
     // MARK: Rows
@@ -1473,52 +1464,53 @@ struct UISettingsPanelView: View {
     /// PIN), "Change PIN…" after. Same id either way.
     private var changePIN: some View {
         let label = actions.store.parentPIN == nil ? Self.setPinLabel : Self.changePinLabel
-        return UIListRow(label: label) { actions.beginChangePin() }
+        return UIListRow(label: label, symbol: Self.pinSymbol) { actions.beginChangePin() }
             .uiControl("ui.settings.changepin", kind: .button,
                 read: { [actions] in actions.store.parentPIN == nil ? Self.setPinLabel : Self.changePinLabel },
                 activate: { actions.beginChangePin() })
     }
 
-    private var forgotPIN: some View {
-        HStack {
-            UIOnboardingForgotPINButton { actions.beginPINRecovery() }
-            Spacer(minLength: 0)
+    /// What Review Report opened (the PIN, then the review), as a row. The
+    /// send outcome stays under it until the next review clears it: Close
+    /// leaves the review while a send can still be running or fail.
+    private var diagnosticReport: some View {
+        let sending = actions.diagnosticsSend == .sending
+        return VStack(alignment: .leading, spacing: 0) {
+            UIListRow(label: DiagnosticsCopy.review, isDisabled: sending, symbol: Self.reportSymbol) {
+                actions.reviewDiagnosticReport()
+            }
+            .accessibilityIdentifier(UIDiagnosticsControlID.settingsReview)
+            .uiControl(UIDiagnosticsControlID.settingsReview, kind: .button,
+                read: { DiagnosticsCopy.review },
+                activate: { actions.reviewDiagnosticReport() },
+                enabled: { actions.diagnosticsSend != .sending })
+            if let send = actions.diagnosticsSend {
+                Text(DiagnosticsCopy.notice(for: send))
+                    .uiFont(.caption)
+                    .foregroundStyle(SentryColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, UIMetrics.sectionPadding + 26)
+                    .padding(.trailing, UIMetrics.sectionPadding)
+                    .padding(.bottom, 6)
+                    .uiControl(UIDiagnosticsControlID.settingsStatus, kind: .text,
+                        read: { actions.diagnosticsSend.map(DiagnosticsCopy.notice(for:)) ?? "" })
+            }
         }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Spec §9.4: the build, and nothing internal beside it. The model file
-    /// name and the state-root path were rows here until 2026-09-07 (owner):
-    /// they are developer facts, not parent facts.
-    private var version: some View {
-        HStack(spacing: 8) {
-            Text("Version")
-                .uiFont(.callout)
-            Spacer(minLength: 8)
-            Text(UIVersion.display)
-                .uiFont(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .frame(minHeight: UIMetrics.rowHeight(scale: textScale))
-        .accessibilityElement(children: .combine)
-        .uiControl("ui.settings.version", kind: .text,
-            read: { UIVersion.display })
+        .uiScrollAnchor(UIDiagnosticsControlID.settingsReview)
     }
 
     static let changePinLabel = "Change PIN…"
     static let setPinLabel = "Set a PIN…"
-    /// Says what a parent needs before they press: the Mac's password, not the PIN.
-    static let removeCaption = "Removing SentryScreen needs an administrator name and password."
+    static let pinSymbol = "lock"
+    static let reportSymbol = "doc.text"
+    static let removeSymbol = "trash"
 }
 
 // MARK: - Confirmation (spec §9.4 hide icon, §9.5 turn off)
 
 // MARK: - Removal confirmation (SPEC §8.1(7))
 
-/// The one card between "Remove SentryScreen…" and the administrator prompt.
+/// The one card between "Uninstall…" and the administrator prompt.
 /// A red glyph, the copy, Cancel and a red confirm, plus the two questions `packaging/uninstall.sh` accepts, and the
 /// closing line that must be on screen BEFORE the script boots this agent out.
 struct UIRemoveView: View {
@@ -1724,13 +1716,17 @@ extension PolicyMode {
 /// segments, hand-cut radii 11/9/12/9 outside and 8/7/8/6 inside.
 private struct UISettingsTabBar: View {
     @Binding var selection: UISettingsTab
+    /// A small lock on Developer until the PIN opens it.
+    var developerLocked = false
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(UISettingsTab.allCases, id: \.self) { tab in
                 let on = tab == selection
                 Button { selection = tab } label: {
-                    Text(tab.label)
+                    (tab == .developer && developerLocked
+                        ? Text(Image(systemName: "lock.fill")).font(.caption2) + Text(" " + tab.label)
+                        : Text(tab.label))
                         .uiFont(.callout)
                         .fontWeight(.semibold)
                         // Shrink before wrapping, never truncate (no lineLimit):

@@ -1953,7 +1953,7 @@ enum UISelfTest {
                 && UISettingsPanelView.pinNote(pinSet: true) == "Changes ask for your PIN"
                 && UISettingsPanelView.setPinLabel == "Set a PIN…")
         check("remove: the popover link and the Settings row name the action the same way",
-            UninstallCopy.anywhereLabel == UninstallCopy.row && UninstallCopy.row == "Remove SentryScreen…")
+            UninstallCopy.anywhereLabel == UninstallCopy.row && UninstallCopy.row == "Uninstall…")
         check("settings lock: a refused write changes nothing on disk",
             FileManager.default.contents(atPath: path) == before)
         flock(held, LOCK_UN)
@@ -4825,7 +4825,7 @@ enum UISelfTest {
         check("admin: lookup failure ⇒ not admin AND an error to log", bogus.admin == false && bogus.error != nil, "\(bogus)")
     }
 
-    // MARK: 15 — "Remove SentryScreen…" (SPEC §8.1(7); owner 2026-09-05)
+    // MARK: 15 — "Uninstall…" (SPEC §8.1(7); owner 2026-09-05)
 
     /// The removal path, driven headlessly: who may see the row, the
     /// confirmation's state machine, the command handed to the administrator
@@ -4900,10 +4900,10 @@ enum UISelfTest {
         // --- Copy the parent must see -----------------------------------
         check("uninstall: the closing line says the app closes now",
             UninstallCopy.closing.contains("close now"), UninstallCopy.closing)
-        check("uninstall: the row and the confirmation name an administrator, not the PIN",
+        check("uninstall: both confirmations name an administrator, not the PIN",
             UninstallCopy.body.contains("administrator")
                 && !UninstallCopy.body.lowercased().contains("pin")
-                && UISettingsPanelView.removeCaption.contains("administrator"))
+                && UninstallCopy.cardLines.contains { $0.contains("admin password") })
         check("uninstall: the permission control names all users and a new grant on reinstall",
             UninstallCopy.resetPermissionsLabel.contains("all users")
                 && UninstallCopy.resetPermissionsCaption.contains("reinstall"))
@@ -5004,7 +5004,7 @@ enum UISelfTest {
             actions.removalSuppressedReason != nil, "\(String(describing: actions.removalSuppressedReason))")
         actions.confirmRemove()
         check("uninstall: the suppression is loud and nothing runs",
-            actions.removeMessage?.hasPrefix("Removal is not available in this build") == true
+            actions.removeMessage?.hasPrefix("Uninstall is not available in this build") == true
                 && logs.last?.1.contains("SUPPRESSED") == true
                 && actions.uninstallGate == nil,
             "\(String(describing: actions.removeMessage)) \(logs)")

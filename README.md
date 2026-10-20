@@ -92,7 +92,7 @@ cover. [docs/spec.md](docs/spec.md) has the full pipeline (capture → detect �
   <tr>
     <td align="center"><img src="docs/assets/setup-done.png" width="260" alt="Setup complete: Protection is on. You're all set."><br><sub>Protection is on</sub></td>
     <td align="center"><img src="docs/assets/menu-popover.png" width="260" alt="Menu bar popover: Protected, on for everyone on this Mac, with a Pause protection button."><br><sub>Menu bar status</sub></td>
-    <td align="center"><img src="docs/assets/menu-settings.png" width="200" alt="Settings panel: sensitivity Standard or Strict, recent activity, more settings."><br><sub>Parent settings</sub></td>
+    <td align="center"><img src="docs/assets/menu-settings.png" width="200" alt="Settings panel: sensitivity Standard or Strict, recent activity, and the parent rows: PIN, diagnostic report, uninstall."><br><sub>Parent settings</sub></td>
   </tr>
 </table>
 
@@ -190,9 +190,10 @@ install preflight refuses otherwise; leave it out for a Developer ID build.
 
 ## Uninstall
 
-In an administrator account, open the menu bar item › **Uninstall
-SentryScreen…** (the last line of the popover in every state, and at the bottom
-of the Setup window), or Settings › **Remove SentryScreen…**. The parent PIN is
+In an administrator account, open the menu bar item › **Uninstall…** (beside
+Settings… at the bottom of the popover, on its own last line when protection is
+interrupted, and at the bottom of the Setup window), or Settings › Parent ›
+**Uninstall…**. The parent PIN is
 asked first when one is set; the Uninstaller then asks for an administrator
 password. Or, in Terminal:
 

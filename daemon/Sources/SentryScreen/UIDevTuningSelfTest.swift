@@ -179,6 +179,54 @@ extension UISelfTest {
         check("devtab: correct PIN ⇒ reset ran, file gone, sheet back",
             !fm.fileExists(atPath: storeRoot + "/parent/tuning.json") && actions.layer == .settings, "\(actions.layer)")
 
+        // --- 5b. the Developer tab itself is behind the PIN (owner 2026-10-20) ---
+        actions.lock()
+        actions.openSettings()
+        actions.showSettingsTab(.developer)
+        check("devtab: locked ⇒ tapping Developer asks for the PIN and stays on General",
+            actions.layer == .pin && actions.pendingConfirmation == UIActions.developerPin
+                && actions.settingsTab != .developer && !actions.developerUnlocked,
+            "\(actions.layer) \(String(describing: actions.settingsTab))")
+        actions.pinEntry = "0000"
+        actions.submitPIN()
+        spin(until: { !actions.busy })
+        let wrongStays = actions.settingsTab != .developer && !actions.developerUnlocked
+        actions.cancelLayer()
+        check("devtab: a wrong PIN, then Cancel ⇒ back on the sheet, still General, still locked",
+            wrongStays && actions.layer == .settings && actions.settingsTab != .developer && !actions.developerUnlocked,
+            "\(actions.layer) \(String(describing: actions.settingsTab))")
+        actions.showSettingsTab(.developer)
+        actions.pinEntry = "4821"
+        actions.submitPIN()
+        spin(until: { !actions.busy })
+        check("devtab: the right PIN ⇒ the Developer tab shows, unlocked",
+            actions.layer == .settings && actions.settingsTab == .developer && actions.developerUnlocked,
+            "\(actions.layer) \(String(describing: actions.settingsTab))")
+        gated.setClass("ANUS_EXPOSED") { $0.entryFrames = 4 }
+        actions.commitDevTuning()
+        check("devtab: unlocked, a change on the tab applies without asking again",
+            actions.layer == .settings && fm.fileExists(atPath: storeRoot + "/parent/tuning.json"), "\(actions.layer)")
+        actions.showSettingsTab(.general)
+        actions.showSettingsTab(.developer)
+        check("devtab: General and back to Developer does not ask again", actions.settingsTab == .developer
+            && actions.layer == .settings)
+        actions.resetDevTuning()
+        actions.lock()
+        actions.openSettings()
+        check("devtab: the popover closing locks the tab again", !actions.developerUnlocked)
+        actions.showSettingsTab(.developer)
+        check("devtab: … and Developer asks for the PIN again", actions.layer == .pin && actions.settingsTab != .developer)
+        actions.lock()
+        let bareRoot = dir + "/store-nopin"
+        try? fm.removeItem(atPath: bareRoot)
+        try! fm.createDirectory(atPath: bareRoot, withIntermediateDirectories: true)
+        let bare = UIActions(store: UISettingsStore(root: bareRoot, log: { _, _ in }), log: { _, _ in })
+        bare.openSettings()
+        bare.showSettingsTab(.developer)
+        check("devtab: with no PIN set, Developer asks to set one first",
+            bare.layer == .setPin && bare.settingsTab != .developer, "\(bare.layer)")
+        try? fm.removeItem(atPath: bareRoot)
+
         // --- 6. the readout fills from injected events ---
         let readout = TuningReadout()
         let now: Double = 1000

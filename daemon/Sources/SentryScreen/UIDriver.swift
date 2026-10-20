@@ -815,17 +815,12 @@ final class UIDriver {
         // read from the same control a script reads, so the two cannot
         // disagree about which page is on screen.
         //
-        // An OPEN disclosure is exempt too: "More settings" (OWNER 2026-09-28, two tabs;
-        // Settings-General board: "Opening More settings scrolls, as the App
-        // page does today"). Closed, its row names what is inside ("PIN, menu
-        // bar icon, updates, remove"), so nothing is below a fold without a
-        // cue, and the 0 pt rule still holds for the closed page.
+        // General has no fold since 2026-10-20 (mockup A: the "More
+        // settings" disclosure became the Parent card), so the whole page,
+        // Uninstall included, must fit.
         let selected = UIRegistry.shared.control("ui.settings.tab")?.read() ?? ""
-        let disclosure = selected == "general" ? "ui.settings.more" : ""
-        let moreOpen = UIRegistry.shared.control(disclosure)?.read() == "open"
         if UITextScale.current == UITextScale.standard,
             selected != "developer",
-            !moreOpen,
             probe.scrollOverflow > tolerance,
             !allowsSettingsFold
         {

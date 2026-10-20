@@ -29,10 +29,10 @@ enum DiagnosticsCopy {
     ]
     static let disclosureNever = "Never screen content, images, what was detected, window titles, application names, your name, or your e-mail address."
     static let disclosureOnce = "Sent once, only when you press Send. Nothing is sent in the background."
-    /// Settings › General's one diagnostics link (owner 2026-10-20). The
-    /// explanation, "What is sent" and the notice left the section; the
-    /// promise now heads the review itself (`reviewPromise`).
-    static let review = "Review Report"
+    /// Settings › General's one diagnostics row, in the Parent card (owner
+    /// 2026-10-20, mockup A). The explanation and "What is sent" head the
+    /// review itself (`reviewPromise`).
+    static let review = "Diagnostic report…"
     static let reviewTitle = "Diagnostic report"
     static let reviewIntro = "This is exactly what will be sent. Nothing is sent unless you press Send."
     /// The privacy promise the section used to carry, read before Send: the

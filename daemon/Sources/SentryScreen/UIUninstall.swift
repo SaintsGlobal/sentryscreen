@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-// "Remove SentryScreen…" — the in-app removal path (SPEC §8.1(7); owner
+// "Uninstall…" — the in-app removal path (SPEC §8.1(7); owner
 // decision 2026-09-05: a parent must be able to remove SentryScreen from the
 // app, not only by typing a sudo command into Terminal).
 //
@@ -309,17 +309,17 @@ final class UninstallGate {
 /// Every parent-facing word on the removal path, in one place, so the E2E
 /// scripts and the selftest assert the same strings the sheet draws.
 enum UninstallCopy {
-    /// The row at the bottom of the Settings sheet. The ellipsis is the macOS
-    /// promise that a further step follows — here, a confirmation and an
-    /// administrator prompt.
-    static let row = "Remove SentryScreen…"
+    /// The row in Settings' Parent card. The ellipsis is the macOS promise
+    /// that a further step follows — here, a confirmation and an
+    /// administrator prompt. "Uninstall" everywhere (owner 2026-10-20: one
+    /// action, one name, short enough to sit beside Settings… in the
+    /// popover footer).
+    static let row = "Uninstall…"
     /// Popover footer and Setup window link: there in every state, so a
     /// parent stuck in a bug can always remove the app (owner 2026-10-16).
-    /// "Remove", as the Settings row and every card after it say (it read
-    /// "Uninstall" here alone until 2026-10-20: one action, two names).
     static let anywhereLabel = row
-    static let anywhereTitle = "Remove SentryScreen"
-    static let pinConfirmation = "Enter the parent PIN to remove SentryScreen."
+    static let anywhereTitle = "Uninstall SentryScreen"
+    static let pinConfirmation = "Enter the parent PIN to uninstall SentryScreen."
 
     // MARK: Confirm card (board Uninstall-Popover, 2026-09 redesign)
     //
@@ -331,7 +331,7 @@ enum UninstallCopy {
     // (complete removal, as before). There is no permissions switch: it could
     // never be turned off, and the Uninstaller reports permissions cleared.
 
-    static let cardTitle = "Remove SentryScreen?"
+    static let cardTitle = "Uninstall SentryScreen?"
     static let cardLines = [
         "Protection stops for everyone on this Mac.",
         "Needs an admin password.",
@@ -339,7 +339,7 @@ enum UninstallCopy {
     static let keepTickLabel = "Keep settings and PIN"
     static let keepTickCaption = "For a reinstall on this Mac."
     static let cardCancelLabel = "Cancel"
-    static let cardRemoveLabel = "Remove"
+    static let cardRemoveLabel = "Uninstall"
     /// Under the Settings row that opens the card.
     static let rowCaption = "Needs an admin password."
     /// Card body once the Uninstaller has opened (`Outcome.handedOff`).
@@ -348,16 +348,16 @@ enum UninstallCopy {
     /// "When it doesn't finish" lines, replacing the card body. `Try again`
     /// and `Details` are the actions; Details opens the exit code and script
     /// text (`failure(code:message:)`), selectable.
-    static let cardCancelledLine = "Removal cancelled. Nothing changed."
-    static let cardFailedLine = "SentryScreen wasn\u{2019}t removed."
+    static let cardCancelledLine = "Uninstall cancelled. Nothing changed."
+    static let cardFailedLine = "SentryScreen wasn\u{2019}t uninstalled."
     static let cardAlreadyRunningLine = "Already running. Finish it in the Uninstaller window."
-    static let cardClosedEarlyLine = "The Uninstaller closed early. Removal isn\u{2019}t confirmed."
+    static let cardClosedEarlyLine = "The Uninstaller closed early. The uninstall isn\u{2019}t confirmed."
     static let tryAgainLabel = "Try again"
     static let detailsLabel = "Details"
 
-    static let title = "Remove SentryScreen from this Mac?"
+    static let title = "Uninstall SentryScreen from this Mac?"
     static let body = "Protection stops and SentryScreen is removed from this Mac. "
-        + "You will be asked for an administrator name and password."
+        + "Needs an administrator name and password."
 
     /// The removal card's one checkbox (review 2026-09-29, item 10).
     static let deleteTickLabel = "Also delete settings and PIN"
@@ -368,9 +368,9 @@ enum UninstallCopy {
         + "with a new PIN."
 
     static let resetPermissionsLabel = "Clear SentryScreen permission records for all users"
-    static let resetPermissionsCaption = "Removal clears SentryScreen permissions. A reinstall asks for permission again."
+    static let resetPermissionsCaption = "Uninstalling clears SentryScreen permissions. A reinstall asks for permission again."
 
-    static let confirmLabel = "Remove SentryScreen"
+    static let confirmLabel = "Uninstall SentryScreen"
     static let cancelLabel = "Cancel"
 
     /// Shown before the script runs, because the script ends this process.
@@ -379,21 +379,21 @@ enum UninstallCopy {
     /// Prefix in front of the script's own error text. The script's
     /// `ERROR: … remediation=…` line is shown verbatim after it — never
     /// replaced with a friendlier sentence that hides the repair step.
-    static let failedPrefix = "SentryScreen was not removed."
-    static let cancelledNotice = "Removal cancelled. Nothing was changed."
+    static let failedPrefix = "SentryScreen was not uninstalled."
+    static let cancelledNotice = "Uninstall cancelled. Nothing was changed."
 
     /// Why a build refused to run the removal at all. Says which build it is
     /// and what to do instead, rather than looking like a failure of the
     /// removal itself.
     static func suppressed(_ why: String) -> String {
-        "Removal is not available in this build: " + why + ". "
-            + "Remove an installed SentryScreen from its own Settings sheet, or with "
+        "Uninstall is not available in this build: " + why + ". "
+            + "Uninstall an installed SentryScreen from its own Settings sheet, or with "
             + "`sudo \'/Library/Application Support/SentryScreen/uninstall.sh\'`."
     }
 
     static func failure(code: Int32, message: String) -> String {
         let detail = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        return failedPrefix + " The removal script exited \(code)."
+        return failedPrefix + " The uninstall script exited \(code)."
             + (detail.isEmpty ? "" : "\n" + detail)
     }
 }

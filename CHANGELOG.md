@@ -31,9 +31,19 @@
 - Settings › Developer's Last 60 s records only while the Developer tab is open
   and for 10 minutes after it closes, so a Mac where nobody opens the tab no
   longer does that work on every frame.
-- The popover and the Setup window now say "Remove SentryScreen…", as Settings
-  does. With no PIN set, Settings offers "Set a PIN…" (not "Change PIN…" and
-  "Forgot PIN?") and says that changes ask you to set one.
+- Removing the app is called **Uninstall…** everywhere: the popover, Settings,
+  the Setup window, the confirmation and the Uninstaller. In the popover it sits
+  beside Settings… instead of on a line of its own (it keeps its own last line
+  while protection is interrupted). With no PIN set, Settings offers "Set a PIN…"
+  (not "Change PIN…") and says that changes ask you to set one.
+- Settings › General has no "More settings" fold. Under Recent activity a
+  **Parent** card holds Set a PIN… / Change PIN…, **Diagnostic report…** (what
+  Review Report opened) and, for administrators, **Uninstall…**. "Forgot PIN?" is
+  on the Enter PIN screen, and the version is small text at the bottom left of
+  Settings.
+- Settings › **Developer** asks for the parent PIN before it opens (or for a new
+  PIN, if none is set). Once open it stays unlocked until the popover closes, and
+  its changes do not ask again.
 - The Developer tab's Tiles view has a **Zoomed tile** view: pick tile 1–4 and see
   it at full width, with its boxes and, with the blurred preview on, its
   thumbnail, plus where it is and how far it zooms (about 1.9×). It is for
@@ -67,10 +77,10 @@
   gone, and so is the Control + Option + Command + S shortcut that brought a hidden
   icon back. If an older install hid the icon, it reappears; the stored setting is
   still read but ignored.
-- Settings › Diagnostics is now a single **Review Report** link. What a report
+- Settings › Diagnostics is now a single **Diagnostic report…** row. What a report
   contains and never contains moved to the top of the review, so it is read before
   Send. After Send the review stays open and says whether the report arrived;
-  Close returns to Settings, which shows the same outcome under the link.
+  Close returns to Settings, which shows the same outcome under the row.
 - The menu bar icon shows a green check while SentryScreen is protecting and every
   setup check passes: Screen Recording is allowed, the installed parts are present
   and both background jobs are registered. The jobs are re-checked every 30

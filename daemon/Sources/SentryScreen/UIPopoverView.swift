@@ -150,7 +150,7 @@ enum UISymbol {
     /// the two confirmations carry the shape of what they do.
     static let managed = "checkmark"
     static let turnOff = "shield.slash.fill"
-    /// "Remove SentryScreen…" (SPEC §8.1(7)): the row and its confirmation.
+    /// "Uninstall…" (SPEC §8.1(7)): the row and its confirmation.
     static let remove = "trash.fill"
     /// Pause chooser button, the paused tile, Resume, the plans layer's Back,
     /// the protected check, and the keypad's Delete (boards Popover-*).
@@ -225,6 +225,10 @@ struct UIListRow: View {
     let label: String
     var chevron = true
     var isDisabled = false
+    /// A small leading SF Symbol (Settings' Parent card).
+    var symbol: String? = nil
+    /// Label and symbol ink in place of `ink` (Uninstall… is accent).
+    var tint: Color? = nil
     let action: () -> Void
     @State private var hovering = false
     @Environment(\.uiTextScale) private var textScale
@@ -232,12 +236,19 @@ struct UIListRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .uiFont(.callout)
+                        .frame(width: 18)
+                        .foregroundStyle(isDisabled ? SentryColor.muted : tint ?? SentryColor.ink2)
+                        .accessibilityHidden(true)
+                }
                 Text(label)
                     .uiFont(.callout)
                     // A row label wraps rather than truncating once the text
                     // is larger than the 320 pt popover's one line.
                     .fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(isDisabled ? SentryColor.muted : SentryColor.ink)
+                    .foregroundStyle(isDisabled ? SentryColor.muted : tint ?? SentryColor.ink)
                 Spacer(minLength: 0)
                 if chevron {
                     Image(systemName: UISymbol.disclosure)
@@ -639,10 +650,21 @@ struct UIPopoverView: View {
             case .diagnosticsReview: UIDiagnosticsReviewView(actions: actions)
             }
             // The root draws the wordmark inside its Settings… row (footer);
-            // every other layer keeps it bottom-right on its own.
+            // every other layer keeps it bottom-right on its own. Settings
+            // puts the build at its left (mockup A, 2026-10-20: Version was
+            // a row of its own under the "More settings" fold).
             if case .none = actions.layer {} else {
-                HStack { Spacer(minLength: 0); UIPopoverWordmark() }
-                    .padding(.top, 2)
+                HStack(alignment: .firstTextBaseline) {
+                    if case .settings = actions.layer {
+                        Text(Self.versionLine)
+                            .uiFont(.caption2)
+                            .foregroundStyle(SentryColor.muted)
+                            .uiControl("ui.settings.version", kind: .text, read: { UIVersion.display })
+                    }
+                    Spacer(minLength: 0)
+                    UIPopoverWordmark()
+                }
+                .padding(.top, 2)
             }
         }
         .padding(UIMetrics.popoverPadding)
@@ -703,12 +725,17 @@ struct UIPopoverView: View {
         } else {
             healthy
         }
-        if Self.parentControlsAvailable(isAdmin: state.isAdmin) { uninstallLink }
+        // The healthy branch carries it in its footer, beside Settings….
+        if Self.parentControlsAvailable(isAdmin: state.isAdmin), !showsFooter { uninstallLink }
     }
 
-    /// "Remove SentryScreen…" in every parent state (owner 2026-10-16), so
-    /// a parent stuck in a bug can always remove the app. Its own last row:
-    /// the 288 pt footer row has no room beside Settings… and the wordmark.
+    /// The healthy branch, the one with the Settings… footer.
+    private var showsFooter: Bool { !state.isDegraded && sheet != .pause }
+
+    /// "Uninstall…" in every parent state (owner 2026-10-16), so a parent
+    /// stuck in a bug can always remove the app. Beside Settings… in the
+    /// footer (owner 2026-10-20: the one word fits there; "Remove
+    /// SentryScreen…" did not), its own last row where there is no footer.
     private var uninstallLink: some View {
         UIFooterButton(label: UninstallCopy.anywhereLabel, muted: true) { actions.beginUninstall() }
             .uiControl("ui.uninstall", kind: .button,
@@ -753,6 +780,7 @@ struct UIPopoverView: View {
                     .uiControl("ui.settings.open", kind: .button,
                         read: { UIPopoverView.settingsLabel },
                         activate: { actions.openSettings() })
+                uninstallLink.padding(.horizontal, 4)
                 Spacer(minLength: 8)
                 UIPopoverWordmark().padding(.trailing, 4)
             }
@@ -765,6 +793,8 @@ struct UIPopoverView: View {
     }
 
     static let settingsLabel = "Settings…"
+    /// "Version 0.4.2 (build 29)", small and muted in Settings' bottom row.
+    static var versionLine: String { "Version " + UIVersion.display }
 
     // MARK: Header
 

@@ -125,7 +125,7 @@ account and cannot unload them.
 4. **Remote escape:** keep SSH available when testing the installed agent.
 5. **Second account:** covers belong to one session; another admin account is clean.
 6. **Staged rollout:** test uninstall before relying on `KeepAlive`.
-7. **Removal:** Settings › Remove SentryScreen (administrators only) runs the
+7. **Removal:** Settings › Uninstall… (administrators only) runs the
    installed `uninstall.sh` through a separate signed uninstaller.
 8. **Development triggers** (`SIGUSR1` inject, `SIGUSR2` panic) are armed only with
    `--dev-inject`; otherwise the attempt is logged and ignored.
