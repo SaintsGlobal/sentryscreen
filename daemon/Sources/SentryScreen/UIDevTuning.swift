@@ -1443,6 +1443,12 @@ struct UIDeveloperSettingsSection: View {
         return t
     }
 
+    /// A row's second line: box size, app, age (`UIDevTrackRow`).
+    static func metaText(_ r: TuningReadout.TrackRow) -> String {
+        [r.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "—", r.app ?? "—", ageText(r.ageSecs)]
+            .joined(separator: " · ")
+    }
+
     static func ageText(_ secs: Double) -> String { "\(Int(secs.rounded(.down))) s" }
 
     /// One row as text: what the row's id reads, and one line of Copy.
@@ -1531,42 +1537,48 @@ struct UIDevTrackRow: View {
     var body: some View {
         let w = UITypography.points(Self.barWidth, scale: textScale)
         let blocked = row.status == .curtain || row.status == .covered
-        return HStack(spacing: 6) {
-            Text(row.status.symbol)
-                .uiFont(.caption, weight: .bold)
-                .foregroundStyle(row.status == .curtain ? SentryColor.ok : SentryColor.ink)
-                .frame(minWidth: 12)
-            Text(row.code)
-                .uiFont(.caption2, weight: .semibold)
-                .frame(minWidth: 44, alignment: .leading)
-            ZStack(alignment: .leading) {
-                Rectangle().fill(SentryColor.line)
-                Rectangle()
-                    .fill(blocked ? SentryColor.accent : SentryColor.muted)
-                    .frame(width: w * CGFloat(min(1, max(0, row.peak))))
-                Rectangle()
-                    .fill(SentryColor.ink)
-                    .frame(width: 2)
-                    .offset(x: w * CGFloat(min(1, max(0, row.floor))) - 1)
+        // Two lines (2026-10-20): one line of seven fields wrapped every
+        // text to a column a few characters wide at the popover's width
+        // (VM --ui-demo render). Line 1 is what a floor change acts on
+        // (status, class, bar, score against floor); line 2, indented under
+        // the class, is where and when. Each text stays on one line.
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                Text(row.status.symbol)
+                    .uiFont(.caption, weight: .bold)
+                    .foregroundStyle(row.status == .curtain ? SentryColor.ok : SentryColor.ink)
+                    .frame(minWidth: 12)
+                Text(row.code)
+                    .uiFont(.caption2, weight: .semibold)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 44, alignment: .leading)
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(SentryColor.line)
+                    Rectangle()
+                        .fill(blocked ? SentryColor.accent : SentryColor.muted)
+                        .frame(width: w * CGFloat(min(1, max(0, row.peak))))
+                    Rectangle()
+                        .fill(SentryColor.ink)
+                        .frame(width: 2)
+                        .offset(x: w * CGFloat(min(1, max(0, row.floor))) - 1)
+                }
+                .frame(width: w, height: 6)
+                .accessibilityHidden(true)
+                Text(UIDeveloperSettingsSection.scoreText(row))
+                    .uiFont(.caption2)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+                Spacer(minLength: 0)
             }
-            .frame(width: w, height: 6)
-            .accessibilityHidden(true)
-            Text(UIDeveloperSettingsSection.scoreText(row))
+            Text(UIDeveloperSettingsSection.metaText(row))
                 .uiFont(.caption2)
                 .monospacedDigit()
-            Spacer(minLength: 4)
-            Text(row.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "—")
-                .uiFont(.caption2)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Text(row.app ?? "—")
-                .uiFont(.caption2)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .foregroundStyle(.secondary)
-            Text(UIDeveloperSettingsSection.ageText(row.ageSecs))
-                .uiFont(.caption2)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .padding(.leading, 18)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
