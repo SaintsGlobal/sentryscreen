@@ -18,8 +18,16 @@
   record and the Developer tab's Copy now always include `zoomTiles`, so turning
   it off survives a save.
 - If you saved anything in Settings › Developer before this release, your
-  `parent/tuning.json` still holds the old values. Press **Reset to shipped
-  defaults** to adopt the new ones.
+  `parent/tuning.json` still holds the old values. Press **Reset** to adopt the
+  new ones.
+- Settings › Developer is shorter. Each class shows its name and threshold, and
+  its size steps, minimum box and entry frames open from the name; a closed class
+  names any of those that differ from the defaults. The size-steps help is a
+  tooltip, the buttons are **Reset** and **Copy JSON**, the Detection view's four
+  drawing options fold under **Options**, and the Tiles view shows one line until
+  the first tile pass. In Last 60 s each row's floor moved to its second line, a
+  key explains the row symbols, covered classes use their own codes (FBC, FGC,
+  BC), and the suppression counts fold under **Removed by rules**.
 - Window covers now say "Content blocked — click the title bar, then press ⌘W".
   Covers let clicks through, so the old "click here" sent the click to the covered
   content itself. The title bar is never covered, so clicking it only brings the

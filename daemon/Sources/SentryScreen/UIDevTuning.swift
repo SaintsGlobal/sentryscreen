@@ -606,18 +606,10 @@ final class TuningReadout {
         Double(t.peak) * pow(0.5, max(0, now - t.lastAt) / rankHalfLifeSecs)
     }
 
-    /// FBE / FGE / MGE / BE / AE for the exposed classes, "covered" for the
-    /// covered ones (Copy carries the full label).
-    static func classCode(_ label: String) -> String {
-        switch label {
-        case "FEMALE_BREAST_EXPOSED": return "FBE"
-        case "FEMALE_GENITALIA_EXPOSED": return "FGE"
-        case "MALE_GENITALIA_EXPOSED": return "MGE"
-        case "BUTTOCKS_EXPOSED": return "BE"
-        case "ANUS_EXPOSED": return "AE"
-        default: return TuningPolicy.coveredLabels.contains(label) ? "covered" : label
-        }
-    }
+    /// The Tiles row's codes (`ZoomTiles.classCode`): FBE … AE, and FBC / FGC
+    /// / BC for the covered classes, which were all "covered" here; Copy
+    /// carries the full label.
+    static func classCode(_ label: String) -> String { ZoomTiles.classCode(label) }
 
     /// The tab's Clear, the demo and the selftest: back to empty.
     func reset() {
@@ -1022,9 +1014,19 @@ struct UIDeveloperSettingsSection: View {
     @ObservedObject var tuning: UIDevTuning
 
     static let idPrefix = "ui.settings.developer"
-    static let sectionCaption = "Curtain tuning. Every change writes parent/tuning.json; the agent reloads it within 1 s."
-    static let resetLabel = "Reset to shipped defaults"
-    static let copyLabel = "Copy as config.json tuning"
+    static let sectionCaption = "Writes parent/tuning.json; the agent reloads it within 1 s."
+    /// Short, so both buttons fit one row at the popover's width (the long
+    /// forms truncated, VM --ui-demo render 2026-10-20); `.help` keeps them.
+    static let resetLabel = "Reset"
+    static let resetHelp = "Reset every value to the shipped defaults"
+    static let copyLabel = "Copy JSON"
+    static let copyHelp = "Copy the tuning as a config.json \"tuning\" block"
+
+    /// Classes whose size steps, minBoxPt and entryFrames are showing. All
+    /// closed at first: the threshold is the control a floor change needs,
+    /// and five open blocks were most of the tab (VM render 2026-10-20).
+    @State private var openClasses: Set<String> = []
+    @State private var detailsOpen = false
 
     /// The classes the current sensitivity blocks: the five exposed always,
     /// the three covered under Strict.
@@ -1045,11 +1047,6 @@ struct UIDeveloperSettingsSection: View {
                         .uiFont(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(Self.stepsHelp)
-                        .uiFont(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .uiControl("\(Self.idPrefix).stepsHelp", kind: .text, read: { Self.stepsHelp })
                     appliedRow
                     ForEach(labels, id: \.self) { label in
                         Divider()
@@ -1061,10 +1058,12 @@ struct UIDeveloperSettingsSection: View {
                     HStack(spacing: 8) {
                         Button(Self.resetLabel) { actions.resetDevTuning() }
                             .controlSize(.small)
+                            .help(Self.resetHelp)
                             .uiControl("\(Self.idPrefix).reset", kind: .button,
                                 read: { Self.resetLabel }, activate: { actions.resetDevTuning() })
                         Button(Self.copyLabel) { tuning.copyConfigJSON() }
                             .controlSize(.small)
+                            .help(Self.copyHelp)
                             .uiControl("\(Self.idPrefix).copy", kind: .button,
                                 read: { Self.copyLabel }, activate: { tuning.copyConfigJSON() })
                     }
@@ -1094,22 +1093,69 @@ struct UIDeveloperSettingsSection: View {
             .uiControl("\(Self.idPrefix).applied.state", kind: .text, read: { tuning.applied.stateName })
     }
 
+    /// One class: its name and threshold always; size steps, minBoxPt and
+    /// entryFrames behind the name's chevron. Closed, a line names any of
+    /// those three that differ from Reset's values, so nothing in force is
+    /// out of sight unannounced. A refused steps entry opens its class.
     @ViewBuilder private func classRows(_ label: String) -> some View {
         let rule = tuning.draft.rule(for: label) ?? TuningPolicy.ClassRule(threshold: 0)
-        Text(label)
-            .uiFont(.caption)
-            .fontWeight(.semibold)
-            .uiControl("\(Self.idPrefix).\(label)", kind: .text, read: { label })
+        let open = openClasses.contains(label) || Self.refusal(tuning.editError, for: label) != nil
+        let toggle = {
+            if openClasses.contains(label) { openClasses.remove(label) } else { openClasses.insert(label) }
+        }
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: open ? "chevron.down" : "chevron.right")
+                    .uiFont(.caption2, weight: .bold)
+                    .frame(width: 10)
+                    .accessibilityHidden(true)
+                Text(label)
+                    .uiFont(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .uiControl("\(Self.idPrefix).\(label)", kind: .text, read: { label })
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(open ? "Expanded" : "Collapsed")
+        .uiControl("\(Self.idPrefix).\(label).more", kind: .button,
+            read: { openClasses.contains(label) ? "open" : "closed" }, activate: toggle)
         sliderRow("threshold", id: "\(Self.idPrefix).\(label).threshold", value: Double(rule.threshold),
             range: 0.5...1.0, step: 0.01, decimals: 2)
         { v in _ = tuning.applyThreshold(label, Float(v)) }
-        stepsRow(label)
-        sliderRow("minBoxPt", id: "\(Self.idPrefix).\(label).minBoxPt", value: rule.minBoxPt,
-            range: 0...200, step: 1, decimals: 0)
-        { v in tuning.setClass(label) { $0.minBoxPt = v } }
-        sliderRow("entryFrames", id: "\(Self.idPrefix).\(label).entryFrames", value: Double(rule.entryFrames),
-            range: 1...10, step: 1, decimals: 0)
-        { v in tuning.setClass(label) { $0.entryFrames = Int(v) } }
+        if open {
+            stepsRow(label)
+            sliderRow("minBoxPt", id: "\(Self.idPrefix).\(label).minBoxPt", value: rule.minBoxPt,
+                range: 0...200, step: 1, decimals: 0)
+            { v in tuning.setClass(label) { $0.minBoxPt = v } }
+            sliderRow("entryFrames", id: "\(Self.idPrefix).\(label).entryFrames", value: Double(rule.entryFrames),
+                range: 1...10, step: 1, decimals: 0)
+            { v in tuning.setClass(label) { $0.entryFrames = Int(v) } }
+        } else if let changed = Self.closedSummary(rule, base: tuning.base.rule(for: label)) {
+            Text(changed)
+                .uiFont(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.leading, Self.valueInset)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).\(label).changed", kind: .text, read: { changed })
+        }
+    }
+
+    /// A closed class's line: which hidden values differ from `base`
+    /// (Reset's policy), with the staircase read back as its rule. nil when
+    /// all three match.
+    static func closedSummary(_ r: TuningPolicy.ClassRule, base: TuningPolicy.ClassRule?) -> String? {
+        var parts: [String] = []
+        if r.thresholdSteps != (base?.thresholdSteps ?? []) {
+            parts.append(r.thresholdSteps.isEmpty
+                ? "no size steps" : "steps \(TuningPolicy.stepsText(r.thresholdSteps))")
+        }
+        if r.minBoxPt != (base?.minBoxPt ?? 0) { parts.append("minBoxPt \(TuningReadout.fmt(r.minBoxPt))") }
+        if let b = base, r.entryFrames != b.entryFrames { parts.append("entryFrames \(r.entryFrames)") }
+        return parts.isEmpty ? nil : "Changed: " + parts.joined(separator: " · ")
     }
 
     @ViewBuilder private var sharedRows: some View {
@@ -1155,8 +1201,9 @@ struct UIDeveloperSettingsSection: View {
             get: { tuning.draft.zoomTiles },
             set: { on in tuning.draft.zoomTiles = on; actions.commitDevTuning() }))
         {
-            Text("zoomTiles (2 × 2, one tile per frame)").uiFont(.caption)
+            Text("zoomTiles").uiFont(.caption)
         }
+        .help("The zoom pass: one tile of a 2 × 2 grid per frame, on top of the full frame")
         .toggleStyle(.checkbox)
         .uiControl("\(Self.idPrefix).zoomTiles", kind: .toggle,
             read: { tuning.draft.zoomTiles ? "on" : "off" },
@@ -1167,15 +1214,18 @@ struct UIDeveloperSettingsSection: View {
         // What the zoom pass is doing (ZoomTilesView.swift): only while it is on.
         if tuning.draft.zoomTiles {
             UIDevTilesRow(actions: actions, tiles: tuning.tiles)
-                .padding(.leading, 18)
         }
-        sliderRow("curtain.triggerHits", id: "\(Self.idPrefix).curtain.triggerHits",
+        Text("curtain")
+            .uiFont(.caption)
+            .fontWeight(.semibold)
+            .padding(.top, 2)
+        sliderRow("triggerHits", id: "\(Self.idPrefix).curtain.triggerHits",
             value: Double(tuning.draft.curtain.triggerHits), range: 1...10, step: 1, decimals: 0)
         { v in tuning.setTriggerHits(Int(v)) }
-        sliderRow("curtain.windowSecs", id: "\(Self.idPrefix).curtain.windowSecs",
+        sliderRow("windowSecs", id: "\(Self.idPrefix).curtain.windowSecs",
             value: tuning.draft.curtain.windowSecs, range: 0.25...5, step: 0.25, decimals: 2)
         { v in tuning.draft.curtain.windowSecs = v }
-        sliderRow("curtain.holdSecs", id: "\(Self.idPrefix).curtain.holdSecs",
+        sliderRow("holdSecs", id: "\(Self.idPrefix).curtain.holdSecs",
             value: tuning.draft.curtain.holdSecs, range: 0.5...60, step: 0.5, decimals: 1)
         { v in tuning.draft.curtain.holdSecs = v }
     }
@@ -1194,7 +1244,7 @@ struct UIDeveloperSettingsSection: View {
             Text(name)
                 .uiFont(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .leading)
+                .frame(width: Self.labelWidth, alignment: .leading)
             Slider(
                 value: Binding(get: { value }, set: { set($0) }),
                 in: range, step: step,
@@ -1250,12 +1300,13 @@ struct UIDeveloperSettingsSection: View {
             Text(Self.stepsRowLabel)
                 .uiFont(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .leading)
+                .frame(width: Self.labelWidth, alignment: .leading)
             TextField(Self.stepsPlaceholder, text: Binding(
                 get: { tuning.stepsFieldText(label) },
                 set: { tuning.setStepsEntry(label, $0) }))
                 .textFieldStyle(.roundedBorder)
                 .uiFont(.caption2, monospacedDigit: true)
+                .help(Self.stepsHelp)
                 .onSubmit { commit(tuning.stepsFieldText(label)) }
             // Clearing is the one edit a typist gets wrong (an empty field
             // plus Return reads as "nothing happened"): one button, shown
@@ -1283,7 +1334,7 @@ struct UIDeveloperSettingsSection: View {
         Text(refused ?? Self.stepsReadback(threshold: rule.threshold, steps: rule.thresholdSteps))
             .uiFont(.caption2)
             .foregroundStyle(refused == nil ? Color.secondary : Color(nsColor: .systemRed))
-            .padding(.leading, 98)
+            .padding(.leading, Self.valueInset)
             .fixedSize(horizontal: false, vertical: true)
             .uiControl("\(id).reads", kind: .text, read: { [tuning] in
                 if let e = Self.refusal(tuning.editError, for: label) { return e }
@@ -1311,10 +1362,16 @@ struct UIDeveloperSettingsSection: View {
         return parts.joined(separator: ", ")
     }
 
+    /// The slider rows' name column; the readback lines start where the
+    /// controls do (`valueInset`). 92 pt fits "coveredOverlap" in caption2.
+    static let labelWidth: CGFloat = 92
+    static let valueInset: CGFloat = labelWidth + 6
+
     static let stepsRowLabel = "size steps"
     static let stepsPlaceholder = "none — e.g. 64:0.90, 128:0.95"
     static let stepsClearLabel = "Clear"
-    /// One help line for the whole tab (eight fields share the grammar):
+    /// The steps fields' tooltip (eight fields share the grammar; as a
+    /// paragraph on the tab it was six lines over every class):
     /// what a step is, how it is written, and the four rules the parser
     /// refuses by name (`TuningPolicy.validateSteps`).
     static let stepsHelp = "Size steps raise a class's threshold for bigger boxes. Write size:threshold pairs, comma-separated, up to \(TuningPolicy.ClassRule.maxSteps) — 64:0.90 means a box 64 pt or larger (shorter side) needs 0.90. Sizes ascending; every step at or above the class threshold. Return applies; a refused entry is named below and nothing is written."
@@ -1356,6 +1413,13 @@ struct UIDeveloperSettingsSection: View {
                     .uiControl("\(Self.idPrefix).readout.empty", kind: .text, read: { Self.readoutEmptyText })
             }
             readoutControls
+            if !s.isEmpty {
+                Text(Self.keyText)
+                    .uiFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .uiControl("\(Self.idPrefix).readout.key", kind: .text, read: { Self.keyText })
+            }
             let shown = Array(s.rows.prefix(Self.visibleRows))
             ForEach(Array(shown.enumerated()), id: \.element.id) { i, row in
                 UIDevTrackRow(row: row)
@@ -1378,18 +1442,7 @@ struct UIDeveloperSettingsSection: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .uiControl("\(Self.idPrefix).readout.drop", kind: .text, read: { [tuning] in Self.dropLine(tuning.snapshot) })
-            Text(Self.suppressedLine(s))
-                .uiFont(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .uiControl("\(Self.idPrefix).readout.suppressed", kind: .text,
-                    read: { [tuning] in Self.suppressedLine(tuning.snapshot) })
-            Text(Self.stepsLine(s))
-                .uiFont(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .uiControl("\(Self.idPrefix).readout.steps", kind: .text,
-                    read: { [tuning] in Self.stepsLine(tuning.snapshot) })
+            readoutDetails(s)
             if s.overflow > 0 {
                 UIInlineMessage(
                     text: "Readout hit ring full: \(s.overflow) in-window hits evicted "
@@ -1412,6 +1465,54 @@ struct UIDeveloperSettingsSection: View {
             }
         }
     }
+
+    /// The suppression counts and the staircase line, behind one
+    /// disclosure that says how many boxes the rules removed. Together, so
+    /// "threshold step N" is never read without the line that says what N
+    /// did to frames (`stepsLine`). The ring-full warnings stay outside:
+    /// a limit is never folded away.
+    @ViewBuilder private func readoutDetails(_ s: TuningReadout.Snapshot) -> some View {
+        let toggle = { detailsOpen.toggle() }
+        Button(action: toggle) {
+            HStack(spacing: 4) {
+                Image(systemName: detailsOpen ? "chevron.down" : "chevron.right")
+                    .uiFont(.caption2, weight: .bold)
+                    .accessibilityHidden(true)
+                Text(Self.detailsTitle(s)).uiFont(.caption2)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(detailsOpen ? "Expanded" : "Collapsed")
+        .uiControl("\(Self.idPrefix).readout.details", kind: .button,
+            read: { detailsOpen ? "open" : "closed" }, activate: toggle)
+        if detailsOpen {
+            Text(Self.suppressedLine(s))
+                .uiFont(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).readout.suppressed", kind: .text,
+                    read: { [tuning] in Self.suppressedLine(tuning.snapshot) })
+            Text(Self.stepsLine(s))
+                .uiFont(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .uiControl("\(Self.idPrefix).readout.steps", kind: .text,
+                    read: { [tuning] in Self.stepsLine(tuning.snapshot) })
+        }
+    }
+
+    /// "Removed by rules: 24" — the details disclosure's title.
+    static func detailsTitle(_ s: TuningReadout.Snapshot) -> String {
+        "Removed by rules: \(s.suppressedMinBox + s.suppressedCovered + s.stepBoxesCut)"
+    }
+
+    /// What the row symbols mean, once above the rows. Short enough for one
+    /// line at the popover's width (the long form wrapped "⊘" away from
+    /// its words, VM render 2026-10-20); each row's tooltip has the words.
+    static let keyText = "✓ curtain · ◼ covered · ○ below floor · ⊘ removed"
 
     /// ROWS SHOWN on the tab. 12 (2026-10-20), ASSUMED: about what fits the
     /// popover's Developer page without the list pushing the footer out of
@@ -1462,7 +1563,22 @@ struct UIDeveloperSettingsSection: View {
         return r.status.text + " as \(to) (covered-beats-exposed)"
     }
 
-    /// A row's second line: box size, app, age (`UIDevTrackRow`).
+    /// The row's first line ends in its peak alone ("0.93", latest after it
+    /// when it differs); the floor moved to line 2. With the floor beside
+    /// the peak a relabelled row ("0.71 · covered floor 0.60") ran past the
+    /// popover column and widened the whole tab (VM render 2026-10-20).
+    static func peakText(_ r: TuningReadout.TrackRow) -> String {
+        var t = TuningReadout.conf(r.peak)
+        if r.latest != r.peak { t += " (latest \(TuningReadout.conf(r.latest)))" }
+        return t
+    }
+
+    /// The row's second line on the tab: floor, then `metaText`.
+    static func floorMetaText(_ r: TuningReadout.TrackRow) -> String {
+        (r.judgedAs == nil ? "floor " : "covered floor ") + TuningReadout.conf(r.floor) + " · " + metaText(r)
+    }
+
+    /// Box size, app, age (`UIDevTrackRow`'s second line, after the floor).
     static func metaText(_ r: TuningReadout.TrackRow) -> String {
         [r.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "—", r.app ?? "—", ageText(r.ageSecs)]
             .joined(separator: " · ")
@@ -1513,8 +1629,11 @@ struct UIDeveloperSettingsSection: View {
 
     static func dropLine(_ s: TuningReadout.Snapshot) -> String {
         guard let d = s.lastDrop else { return "Last curtain drop: none in the last 60 s" }
-        return "Last curtain drop: \(d.action) window \(d.windowID)" + (d.app.map { " app=\($0)" } ?? "")
-            + " at \(UIDevTuning.clock.string(from: Date(timeIntervalSinceReferenceDate: d.at)))"
+        // App and time first, the way the rows read; the action and window
+        // id after, for matching against the log.
+        return "Last curtain drop: \(d.app ?? "app unknown") · "
+            + "\(UIDevTuning.clock.string(from: Date(timeIntervalSinceReferenceDate: d.at)))"
+            + " (\(d.action), window \(d.windowID))"
     }
 
     /// All three counts are 60 s frame-ring sums (`FrameStat`), so none can
@@ -1559,8 +1678,9 @@ struct UIDevTrackRow: View {
         // Two lines (2026-10-20): one line of seven fields wrapped every
         // text to a column a few characters wide at the popover's width
         // (VM --ui-demo render). Line 1 is what a floor change acts on
-        // (status, class, bar, score against floor); line 2, indented under
-        // the class, is where and when. Each text stays on one line.
+        // (status, class, bar, score); line 2, indented under the class, is
+        // the floor it is judged against, then where and when. Each text
+        // stays on one line.
         return VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 6) {
                 Text(row.status.symbol)
@@ -1584,14 +1704,14 @@ struct UIDevTrackRow: View {
                 }
                 .frame(width: w, height: 6)
                 .accessibilityHidden(true)
-                Text(UIDeveloperSettingsSection.scoreText(row))
+                Text(UIDeveloperSettingsSection.peakText(row))
                     .uiFont(.caption2)
                     .monospacedDigit()
                     .lineLimit(1)
-                    .fixedSize()
+                    .truncationMode(.tail)
                 Spacer(minLength: 0)
             }
-            Text(UIDeveloperSettingsSection.metaText(row))
+            Text(UIDeveloperSettingsSection.floorMetaText(row))
                 .uiFont(.caption2)
                 .monospacedDigit()
                 .lineLimit(1)

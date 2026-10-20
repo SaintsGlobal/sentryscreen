@@ -459,9 +459,41 @@ struct UIDevTilesRow: View {
         .uiScrollAnchor(Self.idPrefix)
     }
 
+    /// Before the first pass, one line: an empty grid, four "no pass yet"
+    /// lines, the legend and a preview with nothing to show said the same
+    /// thing six times (VM render 2026-10-20). After it, the drawing and its
+    /// legend; the per-tile lines are the drawing's VoiceOver label and the
+    /// scripts' `tiles.N` reads, not more text under it.
     @ViewBuilder private var content: some View {
         Text(ZoomTilesCopy.rowCaption).uiFont(.caption2).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+        if tiles.snapshot.passes == 0 {
+            Text(ZoomTilesCopy.noPass).uiFont(.caption2).foregroundStyle(.secondary)
+                .uiControl("\(Self.idPrefix).nopass", kind: .text, read: { ZoomTilesCopy.noPass })
+        } else {
+            drawing
+            Text(ZoomTilesCopy.legend).uiFont(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle(isOn: Binding(get: { tiles.preview }, set: { actions.setTilesPreview($0) })) {
+                Text(ZoomTilesCopy.previewLabel).uiFont(.caption)
+            }
+            .toggleStyle(.checkbox)
+            .help(ZoomTilesCopy.previewCaption)
+            .uiControl("\(Self.idPrefix).preview", kind: .toggle,
+                read: { tiles.preview ? "on" : "off" }, activate: { actions.setTilesPreview(!tiles.preview) })
+            .uiControl("\(Self.idPrefix).preview.state", kind: .text, read: { tiles.exclusion.rawValue })
+            if tiles.preview && tiles.exclusion != .confirmed {
+                Text(ZoomTilesCopy.waiting)
+                    .uiFont(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        if let why = tiles.refusal {
+            UIInlineMessage(text: why, symbol: UISymbol.warning, tint: .systemOrange)
+                .uiControl("\(Self.idPrefix).refusal", kind: .text, read: { tiles.refusal ?? "" })
+        }
+    }
+
+    private var drawing: some View {
         GeometryReader { g in
             Canvas { ctx, size in draw(&ctx, size) }
                 .frame(width: g.size.width, height: g.size.width * aspect)
@@ -469,26 +501,13 @@ struct UIDevTilesRow: View {
         .aspectRatio(1 / aspect, contentMode: .fit)
         .accessibilityElement()
         .accessibilityLabel(lines.joined(separator: ". "))
-        ForEach(0..<ZoomTiles.count, id: \.self) { i in
-            let line = ZoomTilesCopy.tileLine(i, tiles.snapshot.tiles[i], active: tiles.snapshot.active == i)
-            Text(line).uiFont(.caption2).foregroundStyle(.secondary)
-                .uiControl("\(Self.idPrefix).\(i)", kind: .text, read: {
+        // The per-tile reads ride on the drawing (no text of their own).
+        .background {
+            ForEach(0..<ZoomTiles.count, id: \.self) { i in
+                Color.clear.uiControl("\(Self.idPrefix).\(i)", kind: .text, read: {
                     ZoomTilesCopy.tileLine(i, tiles.snapshot.tiles[i], active: tiles.snapshot.active == i)
                 })
-        }
-        Text(ZoomTilesCopy.legend).uiFont(.caption2).foregroundStyle(.secondary)
-        Toggle(isOn: Binding(get: { tiles.preview }, set: { actions.setTilesPreview($0) })) {
-            Text(ZoomTilesCopy.previewLabel).uiFont(.caption)
-        }
-        .toggleStyle(.checkbox)
-        .uiControl("\(Self.idPrefix).preview", kind: .toggle,
-            read: { tiles.preview ? "on" : "off" }, activate: { actions.setTilesPreview(!tiles.preview) })
-        Text(tiles.preview && tiles.exclusion != .confirmed ? ZoomTilesCopy.waiting : ZoomTilesCopy.previewCaption)
-            .uiFont(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            .uiControl("\(Self.idPrefix).preview.state", kind: .text, read: { tiles.exclusion.rawValue })
-        if let why = tiles.refusal {
-            UIInlineMessage(text: why, symbol: UISymbol.warning, tint: .systemOrange)
-                .uiControl("\(Self.idPrefix).refusal", kind: .text, read: { tiles.refusal ?? "" })
+            }
         }
     }
 
@@ -530,10 +549,6 @@ struct UIDevTilesRow: View {
                 ctx.draw(Text(ZoomTilesCopy.boxLabel(b)).font(.system(size: 8, design: .monospaced))
                     .foregroundColor(ink), at: CGPoint(x: r.minX + 1, y: r.minY - 1), anchor: .bottomLeading)
             }
-        }
-        if s.passes == 0 {
-            ctx.draw(Text(ZoomTilesCopy.noPass).font(.caption2).foregroundColor(.secondary),
-                at: CGPoint(x: size.width / 2, y: size.height / 2))
         }
         ctx.stroke(Path(frame), with: .color(.secondary), lineWidth: 1)
     }

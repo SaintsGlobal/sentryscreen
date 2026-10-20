@@ -233,7 +233,8 @@ extension UISelfTest {
             "\(String(describing: s.lastDrop))")
         check("devtab: readout lines carry the numbers",
             UIDeveloperSettingsSection.classLine(b!) == "BUTTOCKS_EXPOSED: 3 hits, 108–324 pt, max conf 0.84"
-                && UIDeveloperSettingsSection.dropLine(s).hasPrefix("Last curtain drop: drop (parole) window 9 app=Safari")
+                && UIDeveloperSettingsSection.dropLine(s).hasPrefix("Last curtain drop: Safari · ")
+                && UIDeveloperSettingsSection.dropLine(s).hasSuffix(" (drop (parole), window 9)")
                 && UIDeveloperSettingsSection.suppressedLine(s).hasPrefix(
                     "Suppressed: min box 1, covered-beats-exposed 1, threshold step 0 — last: min box"),
             UIDeveloperSettingsSection.suppressedLine(s))
@@ -326,6 +327,8 @@ extension UISelfTest {
             UIDeveloperSettingsSection.suppressedLine(st)
                 .hasPrefix("Suppressed: min box 1, covered-beats-exposed 0, threshold step 2 — last: min box"),
             UIDeveloperSettingsSection.suppressedLine(st))
+        check("devtab: the Details title totals the three rules' removals",
+            UIDeveloperSettingsSection.detailsTitle(st) == "Removed by rules: 3", UIDeveloperSettingsSection.detailsTitle(st))
         // An unmeasured screen (--replay) falls back to the flat threshold:
         // the box blocks, nothing is cut, and no step is named.
         feed([big], stepReadout, policy: stepPolicy, screen: .zero, at: now + 4)
@@ -362,6 +365,18 @@ extension UISelfTest {
                 // answer for it — its row's own `read` closure does
                 // (`UIDeveloperSettingsSection.stepsRow`).
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.thresholdSteps", in: p) == nil)
+
+        // --- 8b. a closed class names what it hides that differs from Reset ---
+        let baseAE = base.rule(for: "ANUS_EXPOSED")
+        var ae = baseAE ?? TuningPolicy.ClassRule(threshold: 0.7)
+        check("devtab: a closed class at Reset's values shows no changed line",
+            UIDeveloperSettingsSection.closedSummary(ae, base: baseAE) == nil)
+        ae.minBoxPt = 12
+        ae.entryFrames += 1
+        ae.thresholdSteps = [.init(minPt: 64, threshold: 0.9)]
+        let summary = UIDeveloperSettingsSection.closedSummary(ae, base: baseAE)
+        check("devtab: a closed class names its changed steps, minBoxPt and entryFrames",
+            summary == "Changed: steps 64:0.90 · minBoxPt 12 · entryFrames \(ae.entryFrames)", summary ?? "nil")
         try? fm.removeItem(atPath: dir)
     }
 
@@ -479,9 +494,15 @@ extension UISelfTest {
                     && row.map { UIDeveloperSettingsSection.scoreText($0).contains("covered floor") } == true
                     && row.map { UIDeveloperSettingsSection.statusText($0) } == "covered as FEMALE_BREAST_COVERED (covered-beats-exposed)",
                 row.map { UIDeveloperSettingsSection.rowLine($0) } ?? "no FBE row")
-            let plain = jr.snapshot(now: t0).rows.first { $0.code == "covered" }
+            let plain = jr.snapshot(now: t0).rows.first { $0.code == "FBC" }
             check("rows: a plain covered row keeps \"floor\"",
                 plain.map { UIDeveloperSettingsSection.scoreText($0).contains(" · floor ") } == true && plain?.judgedAs == nil)
+            check("rows: on the tab line 1 ends in the peak alone and line 2 starts with the floor",
+                row.map { UIDeveloperSettingsSection.peakText($0) == TuningReadout.conf($0.peak) || UIDeveloperSettingsSection.peakText($0).contains("(latest ") } == true
+                    && row.map { UIDeveloperSettingsSection.floorMetaText($0).hasPrefix("covered floor 0.60 · ") } == true
+                    && plain.map { UIDeveloperSettingsSection.floorMetaText($0).hasPrefix("floor ") } == true,
+                (row.map { UIDeveloperSettingsSection.floorMetaText($0) } ?? "no FBE row") + " | "
+                    + (plain.map { UIDeveloperSettingsSection.floorMetaText($0) } ?? "no FBC row"))
         }
         if let aRow {
             let meta = UIDeveloperSettingsSection.metaText(aRow)
@@ -503,7 +524,7 @@ extension UISelfTest {
         let rules = Dictionary(uniqueKeysWithValues: rr.snapshot(now: t0).rows.map { ($0.code, $0.status) })
         check("rows: ⊘ names the rule — minBoxPt, covered-beats-exposed, size step; a covered class off under Standard has no row",
             rules["MGE"] == .removed("minBoxPt") && rules["FBE"] == .removed("covered-beats-exposed")
-                && rules["BE"] == .removed("size step") && rules["covered"] == nil, "\(rules)")
+                && rules["BE"] == .removed("size step") && rules["FBC"] == nil, "\(rules)")
 
         // A mirror that disagrees with the pipeline is counted and said once.
         let mr = TuningReadout()

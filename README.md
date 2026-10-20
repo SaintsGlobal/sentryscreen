@@ -221,7 +221,7 @@ Every build includes the tuning tools:
   recent detections: one row per detection, showing its score against the class
   floor, and whether it dropped a window cover, was covered, or which rule removed
   it. Changes are written to `parent/tuning.json` behind the parent PIN and apply
-  within a second. **Reset to shipped defaults** returns to the floors below.
+  within a second. **Reset** returns to the floors below.
 - **Detection view:** outlines of what the model sees, over or instead of the
   covers, for a few minutes at a time, including weak detections below the
   blocking threshold.
