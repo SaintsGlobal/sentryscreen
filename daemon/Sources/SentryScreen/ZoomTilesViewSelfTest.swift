@@ -193,6 +193,50 @@ extension UISelfTest {
         row.expanded = false
         check("zoom tiles: the row polls only while open and on screen", !hiddenPolls && open && !row.isPolling)
         row.setVisible(false)
+        // The pipeline records tile passes only while someone looks.
+        let rec = UIDevTiles()
+        let closedRec = rec.monitor.isRecording
+        rec.setVisible(true)
+        let visibleClosed = rec.monitor.isRecording
+        rec.expanded = true
+        let openRec = rec.monitor.isRecording
+        rec.setVisible(false)
+        let hiddenRec = rec.monitor.isRecording
+        rec.setVisible(true)
+        rec.expanded = false
+        check("zoom tiles: passes are recorded only while the row is open AND on screen (no per-frame cost otherwise)",
+            !closedRec && !visibleClosed && openRec && !hiddenRec && !rec.monitor.isRecording)
+        check("zoom preview: no thumbnail is wanted while the preview is off (no crop, blur or render)",
+            rec.monitor.previewBlur == nil)
+
+        // Blur: on by default, a preview-only switch, back on at every turn-off.
+        let b = UIDevTiles()
+        let bh = FakeTilesHost()
+        b.attach(bh)
+        b.setBlur(false)
+        check("zoom blur: on by default; switching it with the preview off does nothing",
+            b.blur && b.monitor.previewBlur == nil)
+        _ = b.turnOnPreview(window: 42)
+        bh.answer([7, 42])
+        let blurredAtStart = b.blur && b.monitor.previewBlur == true
+        b.monitor.store(img, tile: 0)
+        b.setBlur(false)
+        b.poll()
+        check("zoom blur: a preview starts blurred; Blur off asks for sharp tiles and drops the blurred ones",
+            blurredAtStart && !b.blur && b.monitor.previewBlur == false && b.monitor.images().allSatisfy { $0 == nil })
+        b.monitor.store(img, tile: 1)
+        let blurredLate = b.monitor.images()[1] != nil
+        b.monitor.store(img, tile: 1, blurred: false)
+        b.poll()
+        check("zoom blur: a thumbnail rendered at the old setting is refused; one at the new lands",
+            !blurredLate && b.images[1] != nil)
+        b.setBlur(true)
+        let sharpGone = b.monitor.images().allSatisfy { $0 == nil }
+        b.setBlur(false)
+        b.turnOffPreview(reason: .popoverClosed)
+        _ = b.turnOnPreview(window: 42)
+        check("zoom blur: Blur back on drops the sharp tiles; turning the preview off resets Blur on",
+            sharpGone && b.blur)
     }
 
     /// The PIN gate through UIActions (the same requirePIN the other
@@ -297,8 +341,41 @@ extension UISelfTest {
         check("zoom view: the line names the tile, where it is, the zoom and its boxes",
             ZoomTilesCopy.zoomLine(0, s.tiles[0]) == "Tile 1, top left · 1.9× zoom · 2 boxes, 1 tile-only, 1 cut at the seam"
                 && ZoomTilesCopy.zoomLine(3, nil) == "Tile 4, bottom right: no pass yet"
-                && ZoomTilesCopy.zoomLine(3, s.tiles[3]) == "Tile 4, bottom right · 1.9× zoom · no boxes",
-            ZoomTilesCopy.zoomLine(0, s.tiles[0]))
+                && ZoomTilesCopy.zoomLine(3, s.tiles[3]) == "Tile 4, bottom right · 1.9× zoom · 1 box, 1 tile-only"
+                && ZoomTilesCopy.zoomLine(3, ZoomTilePass(index: 3, region: s.tiles[3]?.region ?? .zero,
+                    boxes: [], cut: 0, at: 0))
+                    == "Tile 4, bottom right · 1.9× zoom · no boxes",
+            ZoomTilesCopy.zoomLine(0, s.tiles[0]) + " | " + ZoomTilesCopy.zoomLine(3, s.tiles[3]))
+        check("zoom mapping: every demo tile has a box, so a gold tile-only label is drawn over each colour",
+            s.tiles.allSatisfy { ($0?.boxes.contains(where: \.tileOnly)) == true })
+        // Every drawn box gets a label wholly on the canvas: above the box,
+        // else under it; pulled in from the right edge.
+        let canvas = CGRect(x: 0, y: 0, width: 140, height: 79)
+        let tag = CGSize(width: 46, height: 11)
+        let above = UIDevTilesRow.labelRect(tag, box: CGRect(x: 20, y: 40, width: 10, height: 10), in: canvas)
+        let topEdge = UIDevTilesRow.labelRect(tag, box: CGRect(x: 130, y: 1, width: 7, height: 4), in: canvas)
+        let corner = UIDevTilesRow.labelRect(tag, box: CGRect(x: 0, y: 0, width: 140, height: 79), in: canvas)
+        check("zoom view: a box label sits above its box, or under it at the top edge, always on the canvas",
+            above == CGRect(x: 20, y: 28, width: 46, height: 11) && topEdge.minY == 6 && topEdge.maxX == 140
+                && [above, topEdge, corner].allSatisfy { canvas.contains($0) },
+            "\(above) \(topEdge) \(corner)")
+        // The demo's corner box (tile 2, top-right): its label lands on the
+        // four-up and on the zoomed tile.
+        if let corner = s.tiles[1]?.boxes.first(where: { $0.rect.minY < 0.05 }) {
+            let r = CGRect(x: corner.rect.minX * 140, y: corner.rect.minY * 79, width: corner.rect.width * 140,
+                height: corner.rect.height * 79)
+            check("zoom view: the demo's top-right corner box gets its label on the canvas",
+                canvas.contains(UIDevTilesRow.labelRect(tag, box: r, in: canvas)), "\(r)")
+        } else {
+            check("zoom view: the demo seeds a box at tile 2's top edge", false, "\(String(describing: s.tiles[1]))")
+        }
+        let four = CGSize(width: 140, height: 79)
+        check("zoom view: a tap on the four-up picks the quadrant under it",
+            UIDevTilesRow.tileAt(CGPoint(x: 10, y: 10), size: four) == 0
+                && UIDevTilesRow.tileAt(CGPoint(x: 130, y: 10), size: four) == 1
+                && UIDevTilesRow.tileAt(CGPoint(x: 10, y: 70), size: four) == 2
+                && UIDevTilesRow.tileAt(CGPoint(x: 139.9, y: 78.9), size: four) == 3
+                && UIDevTilesRow.tileAt(CGPoint(x: 500, y: -5), size: four) == 1)
         let r0 = ZoomTiles.region(index: 0, width: 1280, height: 720)
         check("zoom view: a tile keeps the screen's shape (2 × 2 of a 16:9 screen is 16:9)",
             abs(UIDevTilesRow.tileAspect(r0, screen: 9.0 / 16.0) - 9.0 / 16.0) < 0.01,
@@ -364,6 +441,26 @@ extension UISelfTest {
         check("zoom preview: a blocked box is filled solid cover black", centre == 0, "centre=\(centre)")
         check("zoom preview: the blur leaves under 2 % of a 2 px checkerboard's contrast (sigma \(TilePreview.blurSigmaPx) px)",
             hi - lo < 0.02 * 255 && hi > 60, "range \(lo)…\(hi)")
+
+        // Blur off: the same tile, sharp, larger, nothing filled.
+        guard let sharp = TilePreview.render(buffer, region: region, blackout: [hole], blur: false, context: ctx) else {
+            check("zoom preview: the sharp render returns an image", false)
+            return
+        }
+        let sw = sharp.width, sh = sharp.height
+        var spx = [UInt8](repeating: 0, count: sw * sh * 4)
+        let scg = CGContext(data: &spx, width: sw, height: sh, bitsPerComponent: 8, bytesPerRow: sw * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        scg.draw(sharp, in: CGRect(x: 0, y: 0, width: sw, height: sh))
+        func slum(_ x: Int, _ y: Int) -> Double { Double(spx[(y * sw + x) * 4 + 1]) }
+        // The hole's middle: a 2 px checkerboard at ~1 px per thumbnail
+        // pixel, so its 8 × 8 neighbourhood still spans black to white.
+        var sLo = 255.0, sHi = 0.0
+        for y in (sh / 2 - 4)..<(sh / 2 + 4) { for x in (sw / 2 - 4)..<(sw / 2 + 4) {
+            sLo = min(sLo, slum(x, y)); sHi = max(sHi, slum(x, y))
+        } }
+        check("zoom preview: Blur off is \(TilePreview.sharpWidthPx) px wide, unblurred, with the blocked box NOT filled",
+            sw == TilePreview.sharpWidthPx && sHi - sLo > 0.5 * 255, "\(sw)x\(sh) range \(sLo)…\(sHi)")
     }
 
     private static func oneByOne() -> CGImage {

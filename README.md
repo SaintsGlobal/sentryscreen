@@ -224,7 +224,13 @@ Every build includes the tuning tools:
   within a second. **Reset** returns to the floors below.
 - **Detection view:** outlines of what the model sees, over or instead of the
   covers, for a few minutes at a time, including weak detections below the
-  blocking threshold.
+  blocking threshold. Every box carries its label by default.
+- **Tiles:** which quarter of the screen the zoom pass checked last and what it
+  found there, with one tile shown zoomed in. **Show preview** adds thumbnails of
+  the tiles, in memory only and off when the popover closes. They start blurred,
+  with every blocked box filled black; turning **Blur** off shows the tiles sharp
+  and unfilled, as the detector saw them, to check the zoom lands where it should.
+  The tiles are recorded only while this row is open.
 - The same policy can be set in `config.json` under `"tuning"`; an unknown key or
   out-of-range value is refused by name. `sentry-screen --print-tuning` prints the
   policy in force. The fields and their meaning are documented on

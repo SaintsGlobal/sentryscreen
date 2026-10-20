@@ -483,7 +483,7 @@ enum DetectionViewCopy {
     static let nonPolicyLabel = "Show non-policy classes"
     static let nonPolicyCaption = "Also outlines faces and other classes the policy never covers."
     static let labelsLabel = "Show box labels"
-    static let labelsCaption = "Off: outlines only — hover a box to see its label."
+    static let labelsCaption = "On by default. Off: outlines only — hover a box to see its label."
     static let weakLabel = "Show weak detections"
     static let weakCaption = "Also outlines boxes the detector scored under 0.25. View only: they never reach a cover or curtain."
     static func weakFloorText(_ f: Float) -> String { "From score \(f2(f))" }

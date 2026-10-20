@@ -41,6 +41,18 @@
   four-up drawing outlines the zoomed tile dashed, and box labels sit on a backing
   so they read over any thumbnail. Turning the preview on returns you to the Tiles
   row after the PIN.
+- The Tiles preview has a **Blur** checkbox, on by default and on again each time
+  the preview turns off. Off, the tiles show sharp and unfilled, as the detector
+  saw them, at 640 px wide, so you can read what the zoom pass looked at. The
+  preview checkbox is now called **Show preview**.
+- The Tiles view fits on one screen: the four tiles sit beside the tile picker and
+  the zoomed tile under them, so you no longer scroll between them. Tapping a tile
+  in the four-up zooms it.
+- Every drawn box has a label. In the Tiles view a label that would leave the
+  drawing (a box at a tile's top or right edge) moves inside it, and the Detection
+  view's **Show box labels** is now on by default.
+- The Tiles view records tile passes only while its row is open on screen, so a
+  closed row costs nothing per frame.
 - The exit summary in the log now covers the whole run, including the last
   partial minute.
 - Window covers now say "Content blocked — click the title bar, then press ⌘W".

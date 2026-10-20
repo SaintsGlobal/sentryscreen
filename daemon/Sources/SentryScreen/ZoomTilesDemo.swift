@@ -68,8 +68,11 @@ enum ZoomTilesDemo {
 
     /// One pass per tile, ending on tile 1 (index 0) so the zoomed view
     /// shows boxes: a box only the tile found, one the full frame found
-    /// too, and one cut by the seam (counted, not drawn). Synthetic labels
-    /// and scores only. Returns the full-frame boxes the preview blacks out.
+    /// too, and one cut by the seam (counted, not drawn). Every tile has a
+    /// box, so a gold label is drawn over each colour (yellow included),
+    /// and one sits in tile 2's top-right corner, where a label above it
+    /// would leave the canvas. Synthetic labels and scores only. Returns the
+    /// full-frame boxes the preview blacks out.
     @discardableResult
     static func seed(_ monitor: ZoomTilesMonitor, at now: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> [CGRect] {
         func det(_ l: String, _ c: Float, _ r: CGRect) -> Detection { Detection(label: l, confidence: c, box: r) }
@@ -78,9 +81,10 @@ enum ZoomTilesDemo {
         let seen = CGRect(x: 0.14, y: 0.70, width: 0.08, height: 0.10)
         let full = [det("FEMALE_BREAST_EXPOSED", 0.86, seen)]
         let passes: [(Int, [Detection])] = [
-            (1, [det("BUTTOCKS_EXPOSED", 0.74, CGRect(x: 0.70, y: 0.62, width: 0.05, height: 0.06))]),
+            (1, [det("BUTTOCKS_EXPOSED", 0.74, CGRect(x: 0.70, y: 0.62, width: 0.05, height: 0.06)),
+                 det("FEMALE_BREAST_EXPOSED", 0.72, CGRect(x: 0.93, y: 0.95, width: 0.05, height: 0.04))]),
             (2, [det("MALE_GENITALIA_EXPOSED", 0.93, CGRect(x: 0.30, y: 0.18, width: 0.03, height: 0.04))]),
-            (3, []),
+            (3, [det("FEMALE_GENITALIA_EXPOSED", 0.76, CGRect(x: 0.72, y: 0.20, width: 0.04, height: 0.05))]),
             (0, [det("FEMALE_BREAST_EXPOSED", 0.91, seen.offsetBy(dx: 0.003, dy: 0)),
                  det("ANUS_EXPOSED", 0.78, CGRect(x: 0.32, y: 0.84, width: 0.03, height: 0.04)),
                  // Ends 0.001 short of tile 1's right edge (0.5266): cut.
@@ -109,6 +113,9 @@ final class ZoomTilesDemoHost: TilesPreviewHost {
 
     func setTilesPreviewExclusionHandler(_ h: ((CaptureStream.ExclusionResult) -> Void)?) { handler = h }
 
+    /// No frames arrive here, so a Blur change renders the four tiles again.
+    func tilesPreviewBlurChanged() { DispatchQueue.main.async { [weak self] in self?.renderThumbnails() } }
+
     func refreshTilesPreviewExclusion() {
         newestExclusionRequest += 1
         let request = newestExclusionRequest
@@ -123,11 +130,12 @@ final class ZoomTilesDemoHost: TilesPreviewHost {
     /// The real render, into the real monitor: refused there unless the
     /// handshake has confirmed (`ZoomTilesMonitor.store`).
     private func renderThumbnails() {
-        guard let tiles = tilesPreview, tiles.monitor.previewWanted, let buffer = ZoomTilesDemo.pattern() else { return }
+        guard let tiles = tilesPreview, let blur = tiles.monitor.previewBlur, let buffer = ZoomTilesDemo.pattern()
+        else { return }
         for i in 0..<ZoomTiles.count {
             let region = ZoomTiles.region(index: i, width: ZoomTilesDemo.width, height: ZoomTilesDemo.height)
-            if let image = TilePreview.render(buffer, region: region, blackout: blackout, context: context) {
-                tiles.monitor.store(image, tile: i)
+            if let image = TilePreview.render(buffer, region: region, blackout: blackout, blur: blur, context: context) {
+                tiles.monitor.store(image, tile: i, blurred: blur)
             }
         }
         tiles.poll()

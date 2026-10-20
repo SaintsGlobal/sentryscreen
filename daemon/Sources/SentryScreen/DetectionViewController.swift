@@ -95,9 +95,11 @@ final class DetectionViewController: ObservableObject {
     @Published private(set) var offAt: Date?
     @Published private(set) var synthetic = false
     @Published private(set) var showNonPolicy = false
-    /// "Show box labels": off by default, in memory like the other view
-    /// settings. Off draws outlines only; hovering a box shows its chip.
-    @Published private(set) var showLabels = false
+    /// "Show box labels": ON by default (owner 2026-10-20: every drawn box
+    /// has a label, whatever its score), in memory like the other view
+    /// settings. Off is an explicit choice: outlines only, and hovering a
+    /// box shows its chip.
+    @Published private(set) var showLabels = true
     /// "Show weak detections": off by default and on every turn-off. The
     /// view only; `--conf` still decides everything protection sees.
     @Published private(set) var showWeak = false

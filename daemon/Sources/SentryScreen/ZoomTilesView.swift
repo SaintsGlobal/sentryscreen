@@ -13,9 +13,13 @@ import SwiftUI
 // and score; a box the full-frame pass missed (`ZoomTilePass.Box.tileOnly`)
 // is drawn solid, one both passes found dashed.
 //
-// "Show blurred preview" (off by default) adds a heavily blurred thumbnail
-// per tile with every policy-passing box filled solid cover black. Safety
-// rails, all tested by `--ui-selftest` group `zoom`:
+// "Show preview" (off by default) adds a thumbnail per tile. With "Blur"
+// (on by default, and on again every time the preview turns off) it is
+// heavily blurred with every policy-passing box filled solid cover black.
+// Blur off draws the tile's real, sharp pixels with nothing filled: the
+// preview is for whoever tunes the zoom pass, to see what it was given
+// (owner 2026-10-20: the content is already on the screen, and seeing it
+// is the point). Safety rails, all tested by `--ui-selftest` group `zoom`:
 //   * Behind the parent PIN to turn on (UIActions.setTilesPreview); in
 //     memory only, so every agent start is off.
 //   * Capture exclusion FIRST, the Detection view's handshake
@@ -29,10 +33,14 @@ import SwiftUI
 //   * Off on: every pause, the panic hold, shutdown (which the `--ttl` exit
 //     runs), a pipeline rebuild, its own TTL, zoomTiles turned off, the popover
 //     closing, and the UI.
-//   * Pixels are copied on detectQueue, downscaled, blurred and blacked out
-//     there (`TilePreview.render`); the latest image per tile is kept (four
-//     slots, no history), throttled (`TilePreview.minIntervalSecs`), never
-//     written to disk.
+//   * Pixels are copied on detectQueue, downscaled (and with Blur, blurred
+//     and blacked out) there (`TilePreview.render`); the latest image per
+//     tile is kept (four slots, no history), throttled
+//     (`TilePreview.minIntervalSecs`), never written to disk.
+//   * Nothing costs a frame while nobody looks: a tile pass is built and
+//     recorded for the row only while the row is open on screen
+//     (`ZoomTilesMonitor.isRecording`), and thumbnails are rendered only
+//     while the preview is on and confirmed (`previewBlur`).
 
 /// detectQueue writes, main reads: the latest pass per tile, the tile that
 /// ran last, and (preview on and confirmed only) the latest thumbnail per
@@ -49,6 +57,23 @@ final class ZoomTilesMonitor {
     private var snap = Snapshot()
     private var thumbs: [CGImage?] = Array(repeating: nil, count: ZoomTiles.count)
     private var wanted = false
+    private var blurred = true
+    private var recording = false
+
+    /// The pipeline builds and records a pass only while this is true: the
+    /// Tiles row is open and on screen (`UIDevTiles.updatePolling`). The
+    /// merge itself runs either way; it is detection.
+    var isRecording: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return recording
+    }
+
+    func setRecording(_ on: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        recording = on
+    }
 
     /// detectQueue, once per tile pass.
     func record(_ pass: ZoomTilePass) {
@@ -74,6 +99,14 @@ final class ZoomTilesMonitor {
         return wanted
     }
 
+    /// What detectQueue renders: nil while no thumbnail is wanted, else
+    /// whether to blur. One read, so the two cannot disagree.
+    var previewBlur: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return wanted ? blurred : nil
+    }
+
     /// Main. Turning it off drops every stored thumbnail in the same step.
     func setPreviewWanted(_ on: Bool) {
         lock.lock()
@@ -82,13 +115,24 @@ final class ZoomTilesMonitor {
         if !on { thumbs = Array(repeating: nil, count: ZoomTiles.count) }
     }
 
-    /// detectQueue. Refused (dropped) unless the preview is still wanted, so
-    /// a thumbnail rendered just before a turn-off can never land after it.
-    func store(_ image: CGImage, tile: Int) {
+    /// Main. Drops every stored thumbnail, so a sharp one never shows after
+    /// Blur is back on (nor a blurred one after it is off).
+    func setBlur(_ on: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard blurred != on else { return }
+        blurred = on
+        thumbs = Array(repeating: nil, count: ZoomTiles.count)
+    }
+
+    /// detectQueue. Refused (dropped) unless the preview is still wanted at
+    /// the blur it was rendered with, so a thumbnail rendered just before a
+    /// turn-off or a Blur change can never land after it.
+    func store(_ image: CGImage, tile: Int, blurred: Bool = true) {
         lock.lock()
         defer { lock.unlock() }
         // Under the lock: `setPreviewWanted(false)` replaces `thumbs` on main.
-        guard wanted, thumbs.indices.contains(tile) else { return }
+        guard wanted, blurred == self.blurred, thumbs.indices.contains(tile) else { return }
         thumbs[tile] = image
     }
 
@@ -106,6 +150,13 @@ enum TilePreview {
     /// diagram in the ~300 pt Developer column at 2x is ~150 px per tile,
     /// so more pixels would only be more detail to blur away. DERIVED.
     static let widthPx = 160
+
+    /// With Blur off. The zoomed view is the column's full width (~300 pt,
+    /// ~600 px at 2x) and the point is to read what the tile holds, so the
+    /// thumbnail carries about that many pixels. DERIVED. Four slots of
+    /// 640 × ~360 × 4 bytes is under 4 MB, still one render per
+    /// `minIntervalSecs`.
+    static let sharpWidthPx = 640
 
     /// Gaussian sigma in THUMBNAIL pixels. DERIVED 2026-10-20, not measured
     /// on real content (live content is the owner's to check): a tile is
@@ -147,24 +198,28 @@ enum TilePreview {
         }
     }
 
-    /// The tile `region` (Vision bottom-left, normalized) of `buffer`,
-    /// `widthPx` wide, blurred by `blurSigmaPx`, with every `blackout` box
-    /// (frame bottom-left, normalized: the frame's policy-passing boxes)
-    /// filled solid black — before the blur, so nothing bleeds out of it, and
-    /// again after, so the fill stays solid. nil if the region is empty.
+    /// The tile `region` (Vision bottom-left, normalized) of `buffer`.
+    /// Blurred (the default): `widthPx` wide, blurred by `blurSigmaPx`, with
+    /// every `blackout` box (frame bottom-left, normalized: the frame's
+    /// policy-passing boxes) filled solid black — before the blur, so
+    /// nothing bleeds out of it, and again after, so the fill stays solid.
+    /// `blur: false`: `sharpWidthPx` wide, the pixels as captured, nothing
+    /// filled. nil if the region is empty.
     static func render(
-        _ buffer: CVPixelBuffer, region: CGRect, blackout: [CGRect], context: CIContext
+        _ buffer: CVPixelBuffer, region: CGRect, blackout: [CGRect], blur: Bool = true, context: CIContext
     ) -> CGImage? {
         let W = CGFloat(CVPixelBufferGetWidth(buffer)), H = CGFloat(CVPixelBufferGetHeight(buffer))
         let px = CGRect(x: region.minX * W, y: region.minY * H, width: region.width * W, height: region.height * H)
             .integral
         guard px.width > 0, px.height > 0 else { return nil }
-        let scale = CGFloat(widthPx) / px.width
-        let out = CGRect(x: 0, y: 0, width: CGFloat(widthPx), height: (px.height * scale).rounded())
+        let width = CGFloat(blur ? widthPx : sharpWidthPx)
+        let scale = width / px.width
+        let out = CGRect(x: 0, y: 0, width: width, height: (px.height * scale).rounded())
         // CIImage's origin is bottom-left, like Vision's.
         var img = CIImage(cvPixelBuffer: buffer).cropped(to: px)
             .transformed(by: CGAffineTransform(translationX: -px.minX, y: -px.minY).concatenating(
                 CGAffineTransform(scaleX: scale, y: scale)))
+        guard blur else { return context.createCGImage(img.cropped(to: out), from: out) }
         let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
         let holes = blackout.map { b -> CGRect in
             CGRect(x: (b.minX * W - px.minX) * scale, y: (b.minY * H - px.minY) * scale,
@@ -186,6 +241,13 @@ protocol TilesPreviewHost: AnyObject {
     func setTilesPreviewExclusionHandler(_ handler: ((CaptureStream.ExclusionResult) -> Void)?)
     /// Why the preview cannot turn on now (a pause, no capture); nil if it can.
     var tilesPreviewUnavailable: String? { get }
+    /// Blur was switched. The pipeline needs nothing (the next tile pass
+    /// renders at the new setting); the demo, with no frames, renders again.
+    func tilesPreviewBlurChanged()
+}
+
+extension TilesPreviewHost {
+    func tilesPreviewBlurChanged() {}
 }
 
 /// Main thread. The Tiles row's model: the outline poll and the preview's
@@ -221,6 +283,9 @@ final class UIDevTiles: ObservableObject {
     @Published var expanded = false { didSet { updatePolling() } }
     @Published private(set) var snapshot = ZoomTilesMonitor.Snapshot()
     @Published private(set) var preview = false
+    /// "Blur": on by default and on again whenever the preview turns off,
+    /// so every preview starts blurred.
+    @Published private(set) var blur = true
     @Published private(set) var exclusion: Exclusion = .off
     @Published private(set) var images: [CGImage?] = Array(repeating: nil, count: ZoomTiles.count)
     @Published private(set) var refusal: String?
@@ -294,6 +359,8 @@ final class UIDevTiles: ObservableObject {
         preview = false
         exclusion = .off
         monitor.setPreviewWanted(false)
+        blur = true
+        monitor.setBlur(true)
         images = Array(repeating: nil, count: ZoomTiles.count)
         // Id out first (excludedWindowNumber is nil now), then the request.
         host?.refreshTilesPreviewExclusion()
@@ -301,6 +368,17 @@ final class UIDevTiles: ObservableObject {
         offAt = nil
         self.refusal = refusal
         record("state=off reason=\(reason.rawValue)")
+    }
+
+    /// Main. Blur off shows the tiles' sharp pixels with nothing filled. No
+    /// PIN of its own: the preview, and the Developer tab, are behind it.
+    func setBlur(_ on: Bool) {
+        guard preview, blur != on else { return }
+        blur = on
+        monitor.setBlur(on)
+        images = Array(repeating: nil, count: ZoomTiles.count)
+        host?.tilesPreviewBlurChanged()
+        record("blur=\(on ? "on" : "off")")
     }
 
     // MARK: Exclusion handshake (the Detection view's rule)
@@ -365,11 +443,13 @@ final class UIDevTiles: ObservableObject {
     private func updatePolling() {
         let want = visible && expanded
         if !want {
+            monitor.setRecording(false)
             timer?.invalidate()
             timer = nil
             return
         }
         guard timer == nil else { return }
+        monitor.setRecording(true)
         poll()
         let t = Timer(timeInterval: Self.pollSecs, repeats: true) { [weak self] _ in self?.poll() }
         RunLoop.main.add(t, forMode: .common)
@@ -400,15 +480,23 @@ enum ZoomTilesCopy {
     static let rowCaption = "What the zoom pass ran and found. Outlines only; no pixels."
     /// With the preview showing thumbnails, "no pixels" is no longer true.
     static let rowCaptionPreview = "What the zoom pass ran and found, over blurred tiles of the screen."
-    static func caption(previewShowing: Bool) -> String { previewShowing ? rowCaptionPreview : rowCaption }
-    static let previewLabel = "Show blurred preview"
-    static let previewCaption = "Blurred thumbnails with every blocked box filled black. Behind the PIN; "
-        + "off when the popover closes."
-    static let pinPreview = "Show blurred tile previews in the Developer tab."
+    static let rowCaptionSharp = "What the zoom pass ran and found, over the tiles as the detector saw them."
+    static func caption(previewShowing: Bool, blur: Bool = true) -> String {
+        previewShowing ? (blur ? rowCaptionPreview : rowCaptionSharp) : rowCaption
+    }
+    static let previewLabel = "Show preview"
+    static let previewCaption = "Thumbnails of each tile, in memory only. Off when the popover closes."
+    static let blurLabel = "Blur"
+    static let blurCaption = "On: blurred, every blocked box filled black. Off: the tile's real pixels, "
+        + "sharp and unfilled, to check what the zoom pass looks at."
+    static let pinPreview = "Show tile previews in the Developer tab."
+    /// The four-up beside the zoomed tile: the full legend no longer fits
+    /// under a half-width drawing, so the tile part moves into it.
+    static let pickHint = "Tap a tile, or pick one:"
     static let waiting = "Waiting for capture to exclude this window…"
     static let noPass = "No tile pass yet."
     static let legend = "Solid box: found by the tile only. Dashed box: the full frame found it too. "
-        + "Solid tile: the one that ran last; dashed tile: the one zoomed below."
+        + "Solid tile: the one that ran last; dashed tile: the one zoomed."
     static let zoomTitle = "Zoomed tile"
     static let tileNames = ["top left", "top right", "bottom left", "bottom right"]
 
@@ -496,17 +584,26 @@ struct UIDevTilesRow: View {
     /// legend; the per-tile lines are the drawing's VoiceOver label and the
     /// scripts' `tiles.N` reads, not more text under it.
     @ViewBuilder private var content: some View {
-        Text(ZoomTilesCopy.caption(previewShowing: tiles.preview && tiles.exclusion == .confirmed))
+        Text(ZoomTilesCopy.caption(previewShowing: tiles.preview && tiles.exclusion == .confirmed, blur: tiles.blur))
             .uiFont(.caption2).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         if tiles.snapshot.passes == 0 {
             Text(ZoomTilesCopy.noPass).uiFont(.caption2).foregroundStyle(.secondary)
                 .uiControl("\(Self.idPrefix).nopass", kind: .text, read: { ZoomTilesCopy.noPass })
         } else {
-            drawing
+            // The four-up beside the picker, the zoomed tile under both: one
+            // above the other at full width did not fit the popover's
+            // viewport together, so checking a tile meant scrolling between
+            // where it is and what is in it (VM render 2026-10-20).
+            HStack(alignment: .top, spacing: 10) {
+                drawing
+                picker.frame(width: Self.sideWidth)
+            }
+            // A frame for scripts to measure the pair by (`assert … frame`).
+            .background(Color.clear.uiControl("\(Self.idPrefix).fourup", kind: .text, read: { "" }))
+            zoomed
             Text(ZoomTilesCopy.legend).uiFont(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            zoomed
             Toggle(isOn: Binding(get: { tiles.preview }, set: { actions.setTilesPreview($0) })) {
                 Text(ZoomTilesCopy.previewLabel).uiFont(.caption)
             }
@@ -518,6 +615,16 @@ struct UIDevTilesRow: View {
             // accessibility identifier (live VM run, 2026-10-20).
             .background(Color.clear.uiControl("\(Self.idPrefix).preview.state", kind: .text,
                 read: { tiles.exclusion.rawValue }))
+            if tiles.preview {
+                Toggle(isOn: Binding(get: { tiles.blur }, set: { tiles.setBlur($0) })) {
+                    Text(ZoomTilesCopy.blurLabel).uiFont(.caption)
+                }
+                .toggleStyle(.checkbox)
+                .help(ZoomTilesCopy.blurCaption)
+                .padding(.leading, 18)
+                .uiControl("\(Self.idPrefix).blur", kind: .toggle,
+                    read: { tiles.blur ? "on" : "off" }, activate: { tiles.setBlur(!tiles.blur) })
+            }
             if tiles.preview && tiles.exclusion != .confirmed {
                 Text(ZoomTilesCopy.waiting)
                     .uiFont(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -536,39 +643,57 @@ struct UIDevTilesRow: View {
     /// the zoom landed on the part of the screen it should (owner
     /// 2026-10-20). A chosen tile, not the live one: the rotation moves on
     /// every evaluated frame, faster than anyone reads.
-    private var zoomed: some View {
-        let i = zoomTile
-        let pass = tiles.snapshot.tiles[i]
-        let region = pass?.region ?? Self.quadrant(i)
-        let line = ZoomTilesCopy.zoomLine(i, pass)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(ZoomTilesCopy.zoomTitle).uiFont(.caption).fontWeight(.semibold)
-                Spacer(minLength: 0)
-                Picker(ZoomTilesCopy.zoomTitle, selection: $zoomTile) {
-                    ForEach(0..<ZoomTiles.count, id: \.self) { Text("\($0 + 1)").tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-                .fixedSize()
-                .uiControl("\(Self.idPrefix).zoom", kind: .picker, read: { "\(zoomTile + 1)" },
-                    setText: { raw in if let n = Int(raw), (1...ZoomTiles.count).contains(n) { zoomTile = n - 1 } })
+    /// The column beside the four-up. DERIVED: four small segments of one
+    /// digit are ~96 pt; at 104 pt the four-up keeps ~140 pt of the ~250 pt
+    /// card column, and the pair plus the full-width zoomed tile stay
+    /// inside the ~390 pt Settings viewport even on a 4:3 display.
+    static let sideWidth: CGFloat = 104
+
+    /// "Zoomed tile", the 1–4 picker and the tile's line, beside the four-up.
+    private var picker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(ZoomTilesCopy.zoomTitle).uiFont(.caption).fontWeight(.semibold)
+            Picker(ZoomTilesCopy.zoomTitle, selection: $zoomTile) {
+                ForEach(0..<ZoomTiles.count, id: \.self) { Text("\($0 + 1)").tag($0) }
             }
-            GeometryReader { g in
-                Canvas { ctx, size in drawZoom(&ctx, size, tile: i) }
-                    .frame(width: g.size.width, height: g.size.width * Self.tileAspect(region, screen: aspect))
-            }
-            .aspectRatio(1 / Self.tileAspect(region, screen: aspect), contentMode: .fit)
-            .accessibilityElement()
-            .accessibilityLabel(line)
-            Text(line).uiFont(.caption2).foregroundStyle(.secondary)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .uiControl("\(Self.idPrefix).zoom", kind: .picker, read: { "\(zoomTile + 1)" },
+                setText: { raw in if let n = Int(raw), (1...ZoomTiles.count).contains(n) { zoomTile = n - 1 } })
+            Text(ZoomTilesCopy.zoomLine(zoomTile, tiles.snapshot.tiles[zoomTile]))
+                .uiFont(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .uiControl("\(Self.idPrefix).zoom.line", kind: .text, read: {
                     ZoomTilesCopy.zoomLine(zoomTile, tiles.snapshot.tiles[zoomTile])
                 })
         }
+    }
+
+    private var zoomed: some View {
+        let i = zoomTile
+        let pass = tiles.snapshot.tiles[i]
+        let region = pass?.region ?? Self.quadrant(i)
+        return GeometryReader { g in
+            Canvas { ctx, size in drawZoom(&ctx, size, tile: i) }
+                .frame(width: g.size.width, height: g.size.width * Self.tileAspect(region, screen: aspect))
+        }
+        .aspectRatio(1 / Self.tileAspect(region, screen: aspect), contentMode: .fit)
+        .accessibilityElement()
+        .accessibilityLabel(ZoomTilesCopy.zoomLine(i, pass))
+        .background(Color.clear.uiControl("\(Self.idPrefix).zoom.view", kind: .text, read: { "" }))
         .padding(.top, 2)
+    }
+
+    /// Which tile a tap on the four-up picks: the quadrant under it (the
+    /// 10 % overlaps go to the nearer tile's own half).
+    static func tileAt(_ p: CGPoint, size: CGSize) -> Int {
+        guard size.width > 0, size.height > 0 else { return 0 }
+        let n = ZoomTiles.grid
+        let col = min(n - 1, max(0, Int(p.x / size.width * CGFloat(n))))
+        let row = min(n - 1, max(0, Int(p.y / size.height * CGFloat(n))))
+        return row * n + col
     }
 
     /// Height / width of a tile on screen: its normalized region times the
@@ -596,7 +721,7 @@ struct UIDevTilesRow: View {
                 width: b.rect.width / r0.width * size.width, height: b.rect.height / r0.height * size.height)
             let ink = b.tileOnly ? SentryColor.primary : Color.secondary
             ctx.stroke(Path(r), with: .color(ink), style: StrokeStyle(lineWidth: 2, dash: b.tileOnly ? [] : [4, 3]))
-            Self.label(&ctx, ZoomTilesCopy.boxLabel(b), size: 10, ink: ink, at: CGPoint(x: r.minX, y: r.minY - 1))
+            Self.label(&ctx, ZoomTilesCopy.boxLabel(b), size: 10, ink: ink, box: r, in: frame)
         }
         ctx.stroke(Path(frame), with: .color(SentryColor.accent), lineWidth: 2)
     }
@@ -605,6 +730,10 @@ struct UIDevTilesRow: View {
         GeometryReader { g in
             Canvas { ctx, size in draw(&ctx, size) }
                 .frame(width: g.size.width, height: g.size.width * aspect)
+                .contentShape(Rectangle())
+                .onTapGesture { p in
+                    zoomTile = Self.tileAt(p, size: CGSize(width: g.size.width, height: g.size.width * aspect))
+                }
         }
         .aspectRatio(1 / aspect, contentMode: .fit)
         .accessibilityElement()
@@ -659,7 +788,7 @@ struct UIDevTilesRow: View {
                 let ink = b.tileOnly ? SentryColor.primary : Color.secondary
                 ctx.stroke(Path(r), with: .color(ink),
                     style: StrokeStyle(lineWidth: 1.5, dash: b.tileOnly ? [] : [3, 2]))
-                Self.label(&ctx, ZoomTilesCopy.boxLabel(b), size: 8, ink: ink, at: CGPoint(x: r.minX, y: r.minY - 1))
+                Self.label(&ctx, ZoomTilesCopy.boxLabel(b), size: 8, ink: ink, box: r, in: frame)
             }
         }
         ctx.stroke(Path(frame), with: .color(.secondary), lineWidth: 1)
@@ -667,13 +796,29 @@ struct UIDevTilesRow: View {
 
     /// A box label on a paper backing, so it reads over any thumbnail
     /// colour (gold on the yellow quadrant was all but invisible).
-    static func label(_ ctx: inout GraphicsContext, _ text: String, size: CGFloat, ink: Color, at p: CGPoint) {
+    static func label(_ ctx: inout GraphicsContext, _ text: String, size: CGFloat, ink: Color, box: CGRect,
+        in frame: CGRect)
+    {
         let t = ctx.resolve(Text(text).font(.system(size: size, weight: .semibold, design: .monospaced))
             .foregroundColor(ink))
         let s = t.measure(in: CGSize(width: 400, height: 100))
-        let back = CGRect(x: p.x, y: p.y - s.height, width: s.width + 4, height: s.height)
+        let back = labelRect(CGSize(width: s.width + 4, height: s.height), box: box, in: frame)
         ctx.fill(Path(roundedRect: back, cornerRadius: 2), with: .color(SentryColor.paper.opacity(0.85)))
-        ctx.draw(t, at: CGPoint(x: p.x + 2, y: p.y), anchor: .bottomLeading)
+        ctx.draw(t, at: CGPoint(x: back.minX + 2, y: back.maxY), anchor: .bottomLeading)
+    }
+
+    /// Where a label of `size` goes: just above `box`, left edges aligned,
+    /// moved inside `frame` wherever that would cut it — under the box when
+    /// there is no room above (a box at a tile's top edge drew its label off
+    /// the canvas, so it had none), and left from the right edge. Every
+    /// drawn box gets a label that is wholly on the canvas (owner
+    /// 2026-10-20).
+    static func labelRect(_ size: CGSize, box: CGRect, in frame: CGRect) -> CGRect {
+        var r = CGRect(x: box.minX, y: box.minY - 1 - size.height, width: size.width, height: size.height)
+        if r.minY < frame.minY { r.origin.y = min(box.maxY + 1, frame.maxY - size.height) }
+        r.origin.y = max(frame.minY, r.minY)
+        r.origin.x = max(frame.minX, min(r.minX, frame.maxX - size.width))
+        return r
     }
 
     /// Before the first pass: the plain quadrant, top-left origin.

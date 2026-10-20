@@ -2523,9 +2523,11 @@ final class Pipeline {
                     tile: zoomTile.index, ms: (passMs * 10).rounded() / 10, cut: merged.dropped,
                     full: pass.kept.map(FrameLogger.DetectionRecord.init))
                 // The Developer tab's Tiles row, from this merge's own cut
-                // and same-box decisions.
-                zoomTilesMonitor?.record(ZoomTiles.passView(
-                    merged, index: zoomTile.index, region: zoomTile.region, at: CFAbsoluteTimeGetCurrent()))
+                // and same-box decisions; built only while the row is open.
+                if let monitor = zoomTilesMonitor, monitor.isRecording {
+                    monitor.record(ZoomTiles.passView(
+                        merged, index: zoomTile.index, region: zoomTile.region, at: CFAbsoluteTimeGetCurrent()))
+                }
                 pass.kept = merged.merged
                 logger.count("zoomTilePasses")
                 logger.sample("zoomPassMs", passMs)
@@ -2615,16 +2617,17 @@ final class Pipeline {
         readoutWindows.removeAll(keepingCapacity: true)
         readoutDrops.removeAll(keepingCapacity: true)
         // Tiles preview (ZoomTilesView.swift): only while capture has
-        // confirmed the popover's exclusion (`previewWanted`), throttled,
-        // every policy-passing box of this frame filled black. Memory only.
-        if let zoomTile, let monitor = zoomTilesMonitor, monitor.previewWanted {
+        // confirmed the popover's exclusion (`previewBlur`), throttled; with
+        // Blur, every policy-passing box of this frame filled black, and
+        // without it the tile as captured. Memory only.
+        if let zoomTile, let monitor = zoomTilesMonitor, let blur = monitor.previewBlur {
             if tilePreviewThrottle.admit(CFAbsoluteTimeGetCurrent(), tile: zoomTile.index) {
                 let start = CFAbsoluteTimeGetCurrent()
                 if let image = TilePreview.render(
-                    pixelBuffer, region: zoomTile.region, blackout: filtered.blocked.map(\.box),
+                    pixelBuffer, region: zoomTile.region, blackout: filtered.blocked.map(\.box), blur: blur,
                     context: tilePreviewContext)
                 {
-                    monitor.store(image, tile: zoomTile.index)
+                    monitor.store(image, tile: zoomTile.index, blurred: blur)
                 }
                 logger.sample("tilePreviewMs", (CFAbsoluteTimeGetCurrent() - start) * 1000)
             } else {
