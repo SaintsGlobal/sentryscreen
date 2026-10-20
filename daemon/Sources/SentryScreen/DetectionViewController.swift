@@ -628,7 +628,7 @@ struct DetectionViewHeldPaint {
     }
 }
 
-extension Pipeline: DetectionViewHost {
+extension Pipeline: DetectionViewHost, TilesPreviewHost {
     func clearCoversForDetectionView() { overlays.clearPaint() }
 
     func refreshDetectionViewExclusion() {
@@ -638,7 +638,7 @@ extension Pipeline: DetectionViewHost {
     var newestExclusionRequest: Int { capture?.newestExclusionRequest ?? 0 }
 
     func setExclusionHandler(_ handler: ((CaptureStream.ExclusionResult) -> Void)?) {
-        capture?.onExclusionResult = handler
+        detectionViewExclusionHandler = handler
     }
 
     var detectionViewUnavailable: String? {
@@ -648,6 +648,17 @@ extension Pipeline: DetectionViewHost {
     }
 
     var coverWindowNumber: Int? { overlays.windowNumbers.first }
+
+    // TilesPreviewHost (ZoomTilesView.swift): the same handshake, its own slot.
+    func refreshTilesPreviewExclusion() {
+        capture?.refreshExclusion(windowNumbers: exclusionWindowNumbers)
+    }
+
+    func setTilesPreviewExclusionHandler(_ handler: ((CaptureStream.ExclusionResult) -> Void)?) {
+        tilesPreviewExclusionHandler = handler
+    }
+
+    var tilesPreviewUnavailable: String? { detectionViewUnavailable }
 
     var detectionViewScreen: (frame: CGRect, topInset: CGFloat, scale: CGFloat)? {
         guard let s = overlays.targetScreen ?? NSScreen.screens.first else { return nil }
