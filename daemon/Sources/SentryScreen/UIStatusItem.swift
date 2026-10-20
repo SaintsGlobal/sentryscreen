@@ -46,6 +46,7 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
     private var observer: AnyCancellable?
     private var shownGlyph: UIGlyph?
     private var shownDescription: String?
+    private var shownAllGood: Bool?
     private var appearanceOverride: NSAppearance?
     /// Set by `remove()`. Everything this object shares with the rest of the
     /// UI — `UIRegistry.shared`, the one `UIActivity`, the one `UIActions` —
@@ -98,8 +99,8 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
     /// mutated shared image kept its previous configuration, which is how a
     /// green shield once survived the flip to paused). `SentryLanternGlyph`
     /// sets `isTemplate` per glyph, in both directions.
-    static func glyphImage(_ glyph: UIGlyph, description: String) -> NSImage {
-        let image = SentryLanternGlyph.image(for: glyph)
+    static func glyphImage(_ glyph: UIGlyph, allGood: Bool = false, description: String) -> NSImage {
+        let image = SentryLanternGlyph.image(for: glyph, allGood: allGood)
         image.accessibilityDescription = description
         return image
     }
@@ -108,6 +109,7 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
     private func refresh(force: Bool = false) {
         guard let button = item.button else { return }
         let glyph = state.glyph
+        let allGood = state.menuBarBadgeOK
         let description = state.statusSummary
         // Keyed on the tooltip TOO, not on the glyph alone: extending a pause
         // 15m → 1h leaves the glyph on `.paused` while
@@ -115,10 +117,12 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
         // would leave the old deadline in the tooltip and in the
         // accessibility label until some later transition happened to change
         // the glyph.
-        guard force || glyph != shownGlyph || description != shownDescription else { return }
+        guard force || glyph != shownGlyph || description != shownDescription || allGood != shownAllGood
+        else { return }
         shownGlyph = glyph
         shownDescription = description
-        button.image = Self.glyphImage(glyph, description: description)
+        shownAllGood = allGood
+        button.image = Self.glyphImage(glyph, allGood: allGood, description: description)
         button.toolTip = description
         button.setAccessibilityLabel(description)
     }
@@ -266,6 +270,16 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
 }
 
 extension UIState {
+    /// The green check on the menu-bar face (owner 2026-10-20): protecting,
+    /// AND the setup checks onboarding itself requires all pass
+    /// (`setupHealthy`, from `UIOnboardingRuntime.setupHealthy`). Anything
+    /// else falls back to the glyph's own badge or none.
+    var menuBarBadgeOK: Bool { Self.menuBarBadgeOK(glyph: glyph, setupHealthy: setupHealthy) }
+
+    static func menuBarBadgeOK(glyph: UIGlyph, setupHealthy: Bool) -> Bool {
+        glyph == .protecting && setupHealthy
+    }
+
     /// Glyph for the current state (spec §9.1). Paused wins over health, the
     /// same precedence `headerText` uses: a paused machine is the state the
     /// parent asked for, and saying "protecting" over it would be a lie.

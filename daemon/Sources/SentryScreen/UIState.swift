@@ -161,6 +161,13 @@ final class UIState: ObservableObject {
     /// `.standard` until the pipeline exists — the popover cannot be opened
     /// before then, and the value is corrected in the same launch.
     @Published var basePolicy: PolicyMode = .standard
+    /// Every setup check onboarding requires passes right now
+    /// (`UIOnboardingRuntime.setupHealthy`). Drives only the menu-bar
+    /// face's green check (`menuBarBadgeOK`). False until the runtime says
+    /// so, and false for a run with no onboarding runtime (a development
+    /// run is not an installed agent). Set on the 1 Hz settings tick, only
+    /// when it changes.
+    @Published var setupHealthy = false
     /// True when `--policy` pinned the run (spec §6: flags win, D1).
     /// Production never passes the flag; a dev run that does gets a disabled
     /// picker saying so instead of a control that silently loses.

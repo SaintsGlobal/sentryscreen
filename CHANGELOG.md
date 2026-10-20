@@ -14,6 +14,10 @@
   contains and never contains moved to the top of the review, so it is read before
   Send. After Send the review stays open and says whether the report arrived;
   Close returns to Settings.
+- The menu bar icon shows a green check while SentryScreen is protecting and every
+  setup check passes: Screen Recording is allowed, the installed parts are present
+  and both background jobs are registered. If any check fails the check mark goes
+  away; paused and needs-attention badges are unchanged.
 
 ## 0.4.2 (build 29)
 

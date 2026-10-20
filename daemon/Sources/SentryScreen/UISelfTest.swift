@@ -5619,6 +5619,46 @@ enum UISelfTest {
         }
         check("glyph: the four states draw four different images (owner: separate icons)",
             Set(seen).count == 4, "distinct=\(Set(seen).count)")
+
+        // Green check (2026-10-20): only Protecting with every setup check
+        // passing; every other state keeps its own badge or none.
+        for glyph in [UIGlyph.protecting, .paused, .degraded, .starting] {
+            for healthy in [false, true] {
+                let ok = UIState.menuBarBadgeOK(glyph: glyph, setupHealthy: healthy)
+                check("glyph: green check for \(glyph.rawValue), setup healthy \(healthy)",
+                    ok == (glyph == .protecting && healthy), "ok=\(ok)")
+                let badge = SentryLanternGlyph.badge(for: glyph, allGood: ok)
+                let want: SentryLanternGlyph.Badge = switch glyph {
+                case .protecting: healthy ? .ok : .none
+                case .paused: .pause
+                case .degraded: .alert
+                case .starting: .none
+                }
+                check("glyph: \(glyph.rawValue) badge with setup healthy \(healthy) is \(want)",
+                    badge == want, "badge=\(badge)")
+            }
+        }
+        let plain = UIStatusItem.glyphImage(.protecting, description: "d")
+        let good = UIStatusItem.glyphImage(.protecting, allGood: true, description: "d")
+        check("glyph: the green-check face is not a template (it carries green)", !good.isTemplate)
+        check("glyph: the green-check face is the same 16x16 pt size", good.size == plain.size, "\(good.size)")
+        check("glyph: the green-check face differs from plain Protecting",
+            good.tiffRepresentation != plain.tiffRepresentation)
+        // setupHealthy needs EVERY check; each one alone failing turns it off.
+        func healthy(installed: Bool = true, screen: Bool = true,
+            components: UIOnboardingComponentHealth = .healthy, services: Bool? = true, failed: Bool = false) -> Bool
+        {
+            UIOnboardingRuntime.setupHealthy(installedMode: installed, screenRecordingApproved: screen,
+                components: components, servicesVerified: services, failedHealthSource: failed)
+        }
+        check("glyph: setup healthy when every check passes", healthy())
+        check("glyph: a development run is never all good", !healthy(installed: false))
+        check("glyph: no Screen Recording → no green check", !healthy(screen: false))
+        check("glyph: a missing component → no green check",
+            !healthy(components: .unhealthy(reason: "x")))
+        check("glyph: launchd jobs not yet checked → no green check", !healthy(services: nil))
+        check("glyph: launchd jobs failed → no green check", !healthy(services: false))
+        check("glyph: an active health failure → no green check", !healthy(failed: true))
     }
 }
 

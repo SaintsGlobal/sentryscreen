@@ -4866,6 +4866,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.republishIfPauseChanged()
             self.pollTuningFile(stateRoot: store.root, log: log)
             self.devTuning?.tick()
+            // Menu-bar green check (UIState.setupHealthy): published only on
+            // a change, so the 1 Hz tick does not repaint the status item.
+            let healthy = MainActor.assumeIsolated { self.onboardingRuntime?.setupHealthy ?? false }
+            if state.setupHealthy != healthy { state.setupHealthy = healthy }
             // Detection view TTL and countdown (1 Hz is the countdown's own
             // resolution; the TTL can land up to one tick late).
             self.uiActions?.detectionView.tick()
