@@ -522,6 +522,15 @@ extension UISelfTest {
             det("BUTTOCKS_EXPOSED", 0.8, x: 0.60, y: 0.40, w: 0.2, h: 0.3),
         ], policy: ruled, at: t0)
         let rules = Dictionary(uniqueKeysWithValues: rr.snapshot(now: t0).rows.map { ($0.code, $0.status) })
+        // Both size floors set: a box the fraction cut names the fraction.
+        let fracR = TuningReadout()
+        var both = base
+        both.standard["MALE_GENITALIA_EXPOSED"]?.minBoxPt = 4
+        both.standard["MALE_GENITALIA_EXPOSED"]?.minBoxFraction = 0.01
+        feed(fracR, [det("MALE_GENITALIA_EXPOSED", 0.95, x: 0.10, y: 0.10, w: 0.05, h: 0.05)], policy: both, at: t0)
+        let frRule = fracR.snapshot(now: t0).rows.first?.status
+        check("rows: ⊘ names minBoxFraction when the fraction cut, even with minBoxPt set",
+            frRule == .removed("minBoxFraction"), "\(String(describing: frRule))")
         check("rows: ⊘ names the rule — minBoxPt, covered-beats-exposed, size step; a covered class off under Standard has no row",
             rules["MGE"] == .removed("minBoxPt") && rules["FBE"] == .removed("covered-beats-exposed")
                 && rules["BE"] == .removed("size step") && rules["FBC"] == nil, "\(rules)")

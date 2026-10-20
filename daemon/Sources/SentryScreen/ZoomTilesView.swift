@@ -52,9 +52,9 @@ final class ZoomTilesMonitor {
 
     /// detectQueue, once per tile pass.
     func record(_ pass: ZoomTilePass) {
-        guard snap.tiles.indices.contains(pass.index) else { return }
         lock.lock()
         defer { lock.unlock() }
+        guard snap.tiles.indices.contains(pass.index) else { return }
         snap.tiles[pass.index] = pass
         snap.active = pass.index
         snap.passes += 1
@@ -85,10 +85,10 @@ final class ZoomTilesMonitor {
     /// detectQueue. Refused (dropped) unless the preview is still wanted, so
     /// a thumbnail rendered just before a turn-off can never land after it.
     func store(_ image: CGImage, tile: Int) {
-        guard thumbs.indices.contains(tile) else { return }
         lock.lock()
         defer { lock.unlock() }
-        guard wanted else { return }
+        // Under the lock: `setPreviewWanted(false)` replaces `thumbs` on main.
+        guard wanted, thumbs.indices.contains(tile) else { return }
         thumbs[tile] = image
     }
 
@@ -121,19 +121,28 @@ enum TilePreview {
     /// under 2 % of its contrast.
     static let blurSigmaPx: Double = 10
 
-    /// At most one thumbnail per this many seconds, across all four tiles
-    /// (each tile refreshes every ~2 s). RECEIPT: the plan's "2 Hz or less";
+    /// At most one thumbnail per this many seconds, across all four tiles,
+    /// stalest tile first (`Throttle`), so each tile refreshes about every
+    /// 4 × this. RECEIPT: the plan's "2 Hz or less";
     /// the cost bound is what matters — one crop, scale, blur and render on
     /// detectQueue per 15 frames at 30 fps. A pass the throttle refuses is
     /// counted (`tilePreviewThrottled` in the 60 s summary), never silent.
     static let minIntervalSecs: Double = 0.5
 
-    /// Admits at most one render per `minIntervalSecs`.
+    /// Admits at most one render per `minIntervalSecs`, and only for the
+    /// tile rendered longest ago. A gap alone beat against the rotation:
+    /// at 15 fps the first frame past 0.5 s is 8 frames on, 8 mod 4 = 0, so
+    /// it admitted the same tile every time and three slots stayed empty.
+    /// The rotation brings every tile round within `ZoomTiles.count` frames,
+    /// so the stalest one waits at most that long past the gap.
     struct Throttle {
         private(set) var lastAt: CFAbsoluteTime = -.infinity
-        mutating func admit(_ now: CFAbsoluteTime) -> Bool {
-            guard now - lastAt >= TilePreview.minIntervalSecs else { return false }
+        private var tileAt = Array(repeating: -Double.infinity, count: ZoomTiles.count)
+        mutating func admit(_ now: CFAbsoluteTime, tile: Int) -> Bool {
+            guard tileAt.indices.contains(tile), now - lastAt >= TilePreview.minIntervalSecs,
+                tileAt[tile] == tileAt.min() else { return false }
             lastAt = now
+            tileAt[tile] = now
             return true
         }
     }

@@ -43,7 +43,7 @@
 - Settings › Diagnostics is now a single **Review Report** link. What a report
   contains and never contains moved to the top of the review, so it is read before
   Send. After Send the review stays open and says whether the report arrived;
-  Close returns to Settings.
+  Close returns to Settings, which shows the same outcome under the link.
 - The menu bar icon shows a green check while SentryScreen is protecting and every
   setup check passes: Screen Recording is allowed, the installed parts are present
   and both background jobs are registered. The jobs are re-checked every 30

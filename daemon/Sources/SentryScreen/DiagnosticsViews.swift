@@ -12,6 +12,8 @@ enum UIDiagnosticsControlID {
     /// The send notice text, on the review since 2026-10-20 (it was
     /// `ui.settings.diagnostics.notice` under the section's button).
     static let reviewNotice = "ui.diagnostics.review.notice"
+    /// The same outcome under Settings' Review Report link, after Close.
+    static let settingsStatus = "ui.settings.diagnostics.status"
     /// `DiagnosticsSendState.name` (`sending|sent|failed`).
     static let reviewNoticeState = "ui.diagnostics.review.notice.state"
     static let reviewText = "ui.diagnostics.review.text"
@@ -21,22 +23,35 @@ enum UIDiagnosticsControlID {
 
 /// Settings › General: one link, "Review Report" (owner 2026-10-20). It
 /// opens the review behind the parent PIN, exactly as the old button did.
-/// Disabled while a report is sending.
+/// Disabled while a report is sending; the last send's outcome under it.
 struct UIDiagnosticsSettingsSection: View {
     @ObservedObject var actions: UIActions
 
     var body: some View {
         UISection {
-            Button(DiagnosticsCopy.review) { actions.reviewDiagnosticReport() }
-                .buttonStyle(.sentryQuiet)
-                .uiFont(.callout)
-                .disabled(actions.diagnosticsSend == .sending)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier(UIDiagnosticsControlID.settingsReview)
-                .uiControl(UIDiagnosticsControlID.settingsReview, kind: .button,
-                    read: { DiagnosticsCopy.review },
-                    activate: { actions.reviewDiagnosticReport() },
-                    enabled: { actions.diagnosticsSend != .sending })
+            VStack(alignment: .leading, spacing: 4) {
+                Button(DiagnosticsCopy.review) { actions.reviewDiagnosticReport() }
+                    .buttonStyle(.sentryQuiet)
+                    .uiFont(.callout)
+                    .disabled(actions.diagnosticsSend == .sending)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(UIDiagnosticsControlID.settingsReview)
+                    .uiControl(UIDiagnosticsControlID.settingsReview, kind: .button,
+                        read: { DiagnosticsCopy.review },
+                        activate: { actions.reviewDiagnosticReport() },
+                        enabled: { actions.diagnosticsSend != .sending })
+                // Close leaves the review while a send can still be running or
+                // fail, so its outcome stays here too until the next review
+                // clears it; otherwise a failure after Close is never seen.
+                if let send = actions.diagnosticsSend {
+                    Text(DiagnosticsCopy.notice(for: send))
+                        .uiFont(.caption)
+                        .foregroundStyle(SentryColor.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .uiControl(UIDiagnosticsControlID.settingsStatus, kind: .text,
+                            read: { actions.diagnosticsSend.map(DiagnosticsCopy.notice(for:)) ?? "" })
+                }
+            }
         }
         .uiScrollAnchor(UIDiagnosticsControlID.settingsReview)
     }

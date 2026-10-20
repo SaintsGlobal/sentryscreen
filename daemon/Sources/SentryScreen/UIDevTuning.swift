@@ -530,7 +530,11 @@ final class TuningReadout {
         case .classOffInPolicy:
             guard v.demotion != nil, let rawFloor else { return nil }
             return (.removed("covered-beats-exposed"), rawFloor)
-        case let .minBox(_, minBoxPt, _): return (.removed(minBoxPt > 0 ? "minBoxPt" : "minBoxFraction"), ownFloor)
+        case let .minBox(_, _, minBoxFraction):
+            // `TuningPolicy.minBox` checks the fraction first; name the one
+            // that cut, as the Detection view does.
+            let byFraction = minBoxFraction > 0 && Double(d.box.width * d.box.height) < minBoxFraction
+            return (.removed(byFraction ? "minBoxFraction" : "minBoxPt"), ownFloor)
         case let .thresholdStep(floor, _, _): return (.removed("size step"), floor)
         case .outsideROI: return (.removed("outside ROI"), ownFloor)
         case .weak, .notPolicyClass: return nil
@@ -951,6 +955,10 @@ final class UIDevTuning: ObservableObject {
         var s = readout.snapshot(now: now)
         if frozenAt != nil { s.rows = snapshot.rows }
         if s != snapshot { snapshot = s }
+        // While frozen the rows are pinned, so a quiet screen publishes
+        // nothing; this keeps "live in N s" counting down.
+        let remaining = freezeRemaining(now: now)
+        if remaining != freezeLeft { freezeLeft = remaining }
         tiles.tick(zoomTiles: draft.zoomTiles)
     }
 
@@ -962,8 +970,14 @@ final class UIDevTuning: ObservableObject {
     static let freezeSecs: Double = 30
     /// When Freeze was pressed; nil = live. Main thread.
     @Published private(set) var frozenAt: Double?
+    /// `freezeRemaining` as of the last tick, published so the Freeze
+    /// button's countdown redraws each second.
+    @Published private(set) var freezeLeft = 0
 
-    func freeze(now: Double = CFAbsoluteTimeGetCurrent()) { frozenAt = now }
+    func freeze(now: Double = CFAbsoluteTimeGetCurrent()) {
+        frozenAt = now
+        freezeLeft = freezeRemaining(now: now)
+    }
     func unfreeze(now: Double = CFAbsoluteTimeGetCurrent()) {
         frozenAt = nil
         tick(now: now)
@@ -1081,6 +1095,11 @@ struct UIDeveloperSettingsSection: View {
             UISection { readout }
         }
         .uiScrollAnchor("\(Self.idPrefix).reset")
+        // A refused steps entry opens its class, so the refusal under the
+        // field is on screen; it then closes like any open class.
+        .onChange(of: tuning.editError) { _, error in
+            if let label = labels.first(where: { Self.refusal(error, for: $0) != nil }) { openClasses.insert(label) }
+        }
     }
 
     private var appliedRow: some View {
@@ -1099,7 +1118,10 @@ struct UIDeveloperSettingsSection: View {
     /// out of sight unannounced. A refused steps entry opens its class.
     @ViewBuilder private func classRows(_ label: String) -> some View {
         let rule = tuning.draft.rule(for: label) ?? TuningPolicy.ClassRule(threshold: 0)
-        let open = openClasses.contains(label) || Self.refusal(tuning.editError, for: label) != nil
+        // A refused entry opens its class by joining `openClasses` (the
+        // body's onChange), so the chevron and `.more` read one state and
+        // one click closes it.
+        let open = openClasses.contains(label)
         let toggle = {
             if openClasses.contains(label) { openClasses.remove(label) } else { openClasses.insert(label) }
         }
@@ -1526,7 +1548,7 @@ struct UIDeveloperSettingsSection: View {
 
     private var readoutControls: some View {
         let frozen = tuning.frozenAt != nil
-        let freezeText = frozen ? "Frozen — live in \(tuning.freezeRemaining()) s" : Self.freezeLabel
+        let freezeText = frozen ? "Frozen — live in \(max(1, tuning.freezeLeft)) s" : Self.freezeLabel
         let toggle = { [tuning] in
             if tuning.frozenAt == nil { tuning.freeze() } else { tuning.unfreeze() }
         }

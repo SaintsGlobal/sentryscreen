@@ -246,7 +246,15 @@ extension UISelfTest {
     private static func zoomTilesPreviewPixels() {
         var t = TilePreview.Throttle()
         check("zoom preview: the throttle admits one render per \(TilePreview.minIntervalSecs) s (≤ 2 Hz)",
-            TilePreview.minIntervalSecs >= 0.5 && t.admit(10) && !t.admit(10.49) && t.admit(10.5) && !t.admit(10.6))
+            TilePreview.minIntervalSecs >= 0.5 && t.admit(10, tile: 0) && !t.admit(10.49, tile: 1)
+                && t.admit(10.5, tile: 1) && !t.admit(10.6, tile: 2))
+        // 15 fps, one tile per frame: the first frame past each 0.5 s gap is
+        // always the same tile. Stalest-first still fills all four slots.
+        var r = TilePreview.Throttle()
+        var rendered = Set<Int>()
+        for f in 0..<120 where r.admit(Double(f) / 15, tile: f % ZoomTiles.count) { rendered.insert(f % ZoomTiles.count) }
+        check("zoom preview: at 15 fps every tile still gets a thumbnail (stalest first)",
+            rendered.count == ZoomTiles.count, "\(rendered.sorted())")
 
         // A 1280 × 720 BGRA frame: a 2 px black/white checkerboard, the
         // highest-contrast fine detail a frame can hold.

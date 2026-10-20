@@ -2616,7 +2616,7 @@ final class Pipeline {
         // confirmed the popover's exclusion (`previewWanted`), throttled,
         // every policy-passing box of this frame filled black. Memory only.
         if let zoomTile, let monitor = zoomTilesMonitor, monitor.previewWanted {
-            if tilePreviewThrottle.admit(CFAbsoluteTimeGetCurrent()) {
+            if tilePreviewThrottle.admit(CFAbsoluteTimeGetCurrent(), tile: zoomTile.index) {
                 let start = CFAbsoluteTimeGetCurrent()
                 if let image = TilePreview.render(
                     pixelBuffer, region: zoomTile.region, blackout: filtered.blocked.map(\.box),
