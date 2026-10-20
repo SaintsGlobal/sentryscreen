@@ -1466,8 +1466,63 @@ final class Pipeline {
     private var tuningOnRecord: TuningPolicy
     /// TUNING TOOL (UIDevTuning.swift): the Developer tab's 60 s readout.
     /// Set by AppDelegate.startPipeline before `start()`, read on
-    /// detectQueue per frame; nil in every headless mode.
-    var tuningReadout: TuningReadout?
+    /// detectQueue per frame; nil in every headless mode. Setting it
+    /// installs the curtain observers its rows need (windows, ✓).
+    var tuningReadout: TuningReadout? {
+        didSet {
+            tuningReadout?.onLimit = { [logger] in logger.event("tuning-readout", $0) }
+            installCurtainDropObservers()
+        }
+    }
+    /// detectQueue, per step: what the curtain credited (window → indices
+    /// into the step's `blocked`) and dropped this frame, for the readout's
+    /// rows. Filled by the curtain observers during `curtainRects`, read
+    /// and cleared by the readout record right after it.
+    private var readoutWindows: [Int: CGWindowID] = [:]
+    private var readoutDrops: [TuningReadout.Drop] = []
+    /// The readout's app names, memoized per window (same bound and rule as
+    /// the Detection view's, `DetectionTraceAppNames`). detectQueue only.
+    private lazy var readoutAppNames: DetectionTraceAppNames = {
+        let names = DetectionTraceAppNames()
+        names.onFull = { [logger = self.logger] in logger.event("tuning-readout", $0) }
+        return names
+    }()
+    /// The crop writer's drop handler (`--dev-crop-dir`); composed with the
+    /// readout's by `installCurtainDropObservers`.
+    private var cropCurtainDrop: ((CGWindowID, CGRect?, [Int]) -> Void)?
+
+    /// One `Curtain.onDrop` for both dev observers (crop writer, readout),
+    /// and `onAttribution` while the readout exists. Main thread, before
+    /// `start()`. Observers only: neither changes a curtain decision.
+    private func installCurtainDropObservers() {
+        guard let curtain else { return }
+        let crop = cropCurtainDrop
+        let readout = tuningReadout != nil
+        guard crop != nil || readout else {
+            curtain.onDrop = nil
+            curtain.onAttribution = nil
+            return
+        }
+        curtain.onDrop = { [weak self] _, id, window, sourceIndices in
+            crop?(id, window, sourceIndices)
+            guard let self, readout else { return }
+            var indices = sourceIndices
+            if indices.isEmpty, let window {
+                // Same fallback the crop writer uses for a drop decided on a
+                // walk-skipped tick: this frame's blocked boxes whose centre
+                // lies in the dropped window.
+                indices = cropBlockedThisFrame.indices.filter { index in
+                    let rect = self.screenRect(self.cropBlockedThisFrame[index].box)
+                    return window.contains(CGPoint(x: rect.midX, y: rect.midY))
+                }
+            }
+            readoutDrops.append(TuningReadout.Drop(windowID: id, indices: indices))
+        }
+        curtain.onAttribution = readout ? { [weak self] credited in
+            guard let self else { return }
+            for (w, indices) in credited { for i in indices { readoutWindows[i] = w } }
+        } : nil
+    }
     /// TUNING TOOL (DetectionTrace.swift): the Detection view seam. The
     /// trace is built on detectQueue at the end of `step` and published
     /// here; the overlay subscribes on main through `onTrace`.
@@ -1954,7 +2009,7 @@ final class Pipeline {
                     kind: .regionBirth, detection: cropBlockedThisFrame[sourceIndex],
                     regionID: region.id, windowID: nil))
             }
-            curtain?.onDrop = { [weak self] _, id, window, sourceIndices in
+            cropCurtainDrop = { [weak self] id, window, sourceIndices in
                 guard let self else { return }
                 var indices = sourceIndices
                 if indices.isEmpty {
@@ -1973,6 +2028,7 @@ final class Pipeline {
                         regionID: nil, windowID: id))
                 }
             }
+            installCurtainDropObservers()
             curtain?.onCropEvent = { [logger] info in logger.event("cropDump", info) }
         }
         // A pin limit that actually clipped an update reports itself the same
@@ -2518,9 +2574,10 @@ final class Pipeline {
             logger.count("tuningThresholdStepUnmeasured", filtered.stepUnmeasured)
         }
         if filtered.stepEmptiedFrame { logger.count("tuningThresholdStepFramesEmptied", 1) }
-        tuningReadout?.record(
-            raw: detections, filtered: filtered, tuning: tuning, mode: effectivePolicy,
-            blockFaces: opts.blockFaces, screen: screenSize, now: CFAbsoluteTimeGetCurrent())
+        // The Developer tab's readout is recorded after `curtainRects` below,
+        // so its rows carry this frame's credited windows and drops.
+        readoutWindows.removeAll(keepingCapacity: true)
+        readoutDrops.removeAll(keepingCapacity: true)
         var blocked = filtered.blocked
         if let roi = opts.roi {
             blocked = blocked.filter { roi.contains(CGPoint(x: $0.box.midX, y: $0.box.midY)) }
@@ -2604,6 +2661,14 @@ final class Pipeline {
         let curtainStart = CFAbsoluteTimeGetCurrent()
         let curtains = curtainRects(blocked, at: capturedAt)
         let curtainMs = (CFAbsoluteTimeGetCurrent() - curtainStart) * 1000
+        if let tuningReadout {
+            tuningReadout.record(
+                raw: detections, filtered: filtered, tuning: tuning, mode: effectivePolicy,
+                blockFaces: opts.blockFaces, screen: screenSize, now: CFAbsoluteTimeGetCurrent(),
+                tracked: tracked, roi: opts.roi, blockedCount: blocked.count,
+                windows: readoutWindows, drops: readoutDrops,
+                appName: { [readoutAppNames] in readoutAppNames.name($0) }, frameAt: capturedAt)
+        }
         lastCurtainPainted = curtains.map(\.rect)
         noteWithheld(detections, covered: painted + lastCurtainPainted, at: capturedAt)
         // Region -> curtain ownership, decided HERE because sync-time rects
@@ -2753,7 +2818,7 @@ final class Pipeline {
         let frames = curtain.update(
             blockedScreenRects: blockedRects,
             tracker: windowTracker, display: display, at: t,
-            sourceIndices: cropWriter == nil ? nil : Array(blocked.indices))
+            sourceIndices: cropWriter == nil && tuningReadout == nil ? nil : Array(blocked.indices))
         noteExposure(blocked, rects: blockedRects, covered: frames.map(\.frame), at: t)
         // Capture-time attribution fallbacks (receipt at
         // Curtain.frontCandidateSecs): named in the 60 s summary like

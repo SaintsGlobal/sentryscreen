@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Settings › Developer › "Last 60 s" now lists one row per detection track (a
+  class in one window at one place on screen) instead of per-class totals. Rows
+  are ranked by their best score, fading with age (half-life 15 s), and re-sorted
+  once a second. Each row shows whether that detection dropped a window cover (✓),
+  was covered (◼), was removed by a rule and which one (⊘), or stayed under its
+  floor (○); the class, a score bar with the floor marked ("0.93 · floor 0.90"),
+  box size, app and age. Rows just under their floor are highlighted. Freeze
+  stops re-sorting for up to 30 seconds, Clear empties the list, and Copy readout
+  copies every row with the summary lines. Rows hold class names, numbers and the
+  app name only. The table holds at most 512 tracks; past that the weakest row is
+  dropped, counted on the tab and written to the log.
+
 ## 0.4.2 (build 29)
 
 Security follow-ups from the 0.4.1 review.

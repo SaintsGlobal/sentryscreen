@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // `--ui-selftest` group "devtab" (UIDevTuning.swift): the Settings ›
@@ -325,6 +326,8 @@ extension UISelfTest {
                 && unmeasured.lastSuppression?.rule == .minBox,
             "cut=\(unmeasured.stepBoxesCut) blocked=\(unmeasured.blockedFrames)")
 
+        caseDeveloperTabTrackRows(root: root, base: base)
+
         // --- 7. the model's tick publishes the snapshot; reset clears it ---
         let live = UIDevTuning(stateRoot: root, groupID: getegid(), base: base, baseSource: "defaults", readout: readout)
         live.tick(now: now + 100)
@@ -351,5 +354,171 @@ extension UISelfTest {
                 // (`UIDeveloperSettingsSection.stepsRow`).
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.thresholdSteps", in: p) == nil)
         try? fm.removeItem(atPath: dir)
+    }
+
+    /// --- 6c. "Last 60 s" rows (2026-10-20): one row per track, ranked by
+    /// decayed peak, ✓ from the curtain's drop indices, near misses, the
+    /// track cap, and the freeze timeout. Synthetic detections only.
+    private static func caseDeveloperTabTrackRows(root: String, base shipped: TuningPolicy) {
+        // Floors pinned to 0.5 HERE: these cases test the rows, not the
+        // shipped floors, so they must not move when the defaults do.
+        var base = shipped
+        for l in TuningPolicy.exposedLabels { base.standard[l]?.threshold = 0.5 }
+        let screen = CGSize(width: 1920, height: 1080)
+        func det(_ l: String, _ c: Float, x: CGFloat, y: CGFloat, w: CGFloat = 0.06, h: CGFloat = 0.1) -> Detection {
+            Detection(label: l, confidence: c, box: CGRect(x: x, y: y, width: w, height: h))
+        }
+        func feed(
+            _ r: TuningReadout, _ raw: [Detection], policy p: TuningPolicy = base, at: Double,
+            windows: [Int: CGWindowID] = [:], drops: [TuningReadout.Drop] = [], blockedCount: Int? = nil
+        ) {
+            let f = p.filter(raw, mode: .standard, blockFaces: false, screen: screen)
+            r.record(
+                raw: raw, filtered: f, tuning: p, mode: .standard, blockFaces: false, screen: screen, now: at,
+                blockedCount: blockedCount ?? f.blocked.count, windows: windows, drops: drops,
+                appName: { $0 == 7 ? "Safari" : ($0 == 9 ? "Preview" : nil) })
+        }
+        let fbeFloor = base.standard["FEMALE_BREAST_EXPOSED"]!.threshold
+        let mgeFloor = base.standard["MALE_GENITALIA_EXPOSED"]!.threshold
+        let r = TuningReadout()
+        var limits: [String] = []
+        r.onLimit = { limits.append($0) }
+        let t0: Double = 5000
+        // A blocked FBE credited to window 7 (blocked index 0), a blocked BE
+        // nobody credited, and an MGE 0.03 under its floor.
+        let fbe = det("FEMALE_BREAST_EXPOSED", fbeFloor + 0.30, x: 0.10, y: 0.70)
+        let be = det("BUTTOCKS_EXPOSED", 0.60, x: 0.60, y: 0.70)
+        let mge = det("MALE_GENITALIA_EXPOSED", mgeFloor - 0.03, x: 0.60, y: 0.10)
+        feed(r, [fbe, be, mge], at: t0, windows: [0: 7])
+        var s = r.snapshot(now: t0)
+        check("rows: one row per track, ranked by peak at age 0 (FBE, BE, then the MGE near miss)",
+            s.rows.map(\.code) == ["FBE", "BE", "MGE"], "\(s.rows.map(\.code))")
+        let fbeRow = s.rows.first { $0.code == "FBE" }
+        check("rows: the credited FBE row carries window 7, its app, size, floor and status ◼",
+            fbeRow?.windowID == 7 && fbeRow?.app == "Safari" && fbeRow?.status == .covered
+                && fbeRow?.floor == fbeFloor && fbeRow?.sidePt == 108, "\(String(describing: fbeRow))")
+        let mgeRow = s.rows.first { $0.code == "MGE" }
+        check("rows: a peak within TuningReadout.nearMissBand (0.05) under its floor is a near miss, status ○",
+            mgeRow?.nearMiss == true && mgeRow?.status == .below && fbeRow?.nearMiss == false
+                && TuningReadout.nearMissBand == 0.05)
+        check("rows: the row text reads symbol, code, \"peak · floor\", size, app, age",
+            fbeRow.map(UIDeveloperSettingsSection.rowLine)
+                == "◼ FBE \(TuningReadout.conf(fbeFloor + 0.30)) · floor \(TuningReadout.conf(fbeFloor)) 108 pt Safari 0 s — covered",
+            fbeRow.map(UIDeveloperSettingsSection.rowLine) ?? "nil")
+        // The same subject next frame, walk skipped (no credit): it joins the
+        // credited track instead of starting a window-less one.
+        feed(r, [det("FEMALE_BREAST_EXPOSED", fbeFloor + 0.35, x: 0.11, y: 0.70)], at: t0 + 1)
+        s = r.snapshot(now: t0 + 1)
+        let joined = s.rows.filter { $0.code == "FBE" }
+        check("rows: an uncredited box joins its label's track in the same cell (one row, 2 hits, window kept, peak raised)",
+            joined.count == 1 && joined[0].hits == 2 && joined[0].windowID == 7
+                && joined[0].peak == fbeFloor + 0.35 && joined[0].latest == fbeFloor + 0.35, "\(joined)")
+        // DECAY: a fresh weaker box outranks an older stronger one.
+        feed(r, [det("FEMALE_GENITALIA_EXPOSED", 0.80, x: 0.35, y: 0.40)], at: t0 + 11)
+        s = r.snapshot(now: t0 + 11)
+        let expectFBE = Double(fbeFloor + 0.35) * pow(0.5, 10 / TuningReadout.rankHalfLifeSecs)
+        let fbeNow = s.rows.first { $0.code == "FBE" }
+        check("rows: rank = peak × 0.5^(age / 15 s) (TuningReadout.rankHalfLifeSecs)",
+            TuningReadout.rankHalfLifeSecs == 15 && fbeNow.map { abs($0.rank - expectFBE) < 1e-6 } == true
+                && fbeNow?.ageSecs == 10, "\(String(describing: fbeNow?.rank)) vs \(expectFBE)")
+        check("rows: decay re-ranks — the fresh FGE 0.80 sits above the 10 s old FBE",
+            s.rows.first?.code == "FGE" && s.rows.firstIndex { $0.code == "FGE" }! < s.rows.firstIndex { $0.code == "FBE" }!,
+            "\(s.rows.map { "\($0.code) \($0.rank)" })")
+        check("rows: ranking happens in the snapshot (the 1 Hz tick), and a row ages out 60 s after its last hit",
+            r.snapshot(now: t0 + 61).rows.map(\.code) == ["FGE", "FBE"]
+                && r.snapshot(now: t0 + 72).rows.isEmpty,
+            "\(r.snapshot(now: t0 + 61).rows.map(\.code))")
+
+        // ✓ ATTRIBUTION: drop indices point into the BLOCKED list; only the
+        // tracks behind those boxes get the mark.
+        let cr = TuningReadout()
+        let a = det("BUTTOCKS_EXPOSED", 0.70, x: 0.10, y: 0.10)
+        let below = det("ANUS_EXPOSED", 0.20, x: 0.40, y: 0.40)  // not blocked: no blocked index
+        let b = det("FEMALE_BREAST_EXPOSED", 0.90, x: 0.70, y: 0.70)
+        feed(cr, [a, below, b], at: t0, windows: [0: 9, 1: 7], drops: [TuningReadout.Drop(windowID: 7, indices: [1])])
+        let cs = cr.snapshot(now: t0)
+        let bRow = cs.rows.first { $0.code == "FBE" }, aRow = cs.rows.first { $0.code == "BE" }
+        check("rows: ✓ goes to the track behind the drop's blocked index (raw 2 = blocked 1), not its neighbour",
+            bRow?.status == .curtain && bRow?.windowID == 7 && aRow?.status == .covered && aRow?.windowID == 9
+                && aRow?.app == "Preview" && cs.rows.first { $0.code == "AE" }?.status == .below,
+            "\(cs.rows.map { "\($0.code) \($0.status) \(String(describing: $0.windowID))" })")
+        feed(cr, [b], at: t0 + 1, windows: [0: 7])
+        check("rows: ✓ is sticky for the track's life (a later plain hit keeps it)",
+            cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }?.status == .curtain)
+        check("rows: the ✓ row reads \"curtain dropped\"",
+            UIDeveloperSettingsSection.rowLine(cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }!)
+                .hasPrefix("✓ FBE 0.90 · floor 0.50 ") == true)
+
+        // ⊘: which rule removed the box.
+        let rr = TuningReadout()
+        var ruled = base
+        ruled.standard["MALE_GENITALIA_EXPOSED"]?.minBoxPt = 24
+        ruled.standard["BUTTOCKS_EXPOSED"]?.thresholdSteps = [.init(minPt: 128, threshold: 0.9)]
+        feed(rr, [
+            det("MALE_GENITALIA_EXPOSED", 0.9, x: 0.10, y: 0.10, w: 0.01, h: 0.01),
+            det("FEMALE_BREAST_EXPOSED", 0.9, x: 0.31, y: 0.31, w: 0.04, h: 0.06),
+            det("FEMALE_BREAST_COVERED", 0.7, x: 0.28, y: 0.28, w: 0.12, h: 0.16),
+            det("BUTTOCKS_EXPOSED", 0.8, x: 0.60, y: 0.40, w: 0.2, h: 0.3),
+        ], policy: ruled, at: t0)
+        let rules = Dictionary(uniqueKeysWithValues: rr.snapshot(now: t0).rows.map { ($0.code, $0.status) })
+        check("rows: ⊘ names the rule — minBoxPt, covered-beats-exposed, size step; a covered class off under Standard has no row",
+            rules["MGE"] == .removed("minBoxPt") && rules["FBE"] == .removed("covered-beats-exposed")
+                && rules["BE"] == .removed("size step") && rules["covered"] == nil, "\(rules)")
+
+        // A mirror that disagrees with the pipeline is counted and said once.
+        let mr = TuningReadout()
+        var mlines: [String] = []
+        mr.onLimit = { mlines.append($0) }
+        feed(mr, [b], at: t0, windows: [0: 7], blockedCount: 2)
+        feed(mr, [b], at: t0 + 1, windows: [0: 7], blockedCount: 2)
+        let ms = mr.snapshot(now: t0 + 1)
+        check("rows: a policy-mirror mismatch drops window and ✓ for the frame, counts it, logs once",
+            ms.attributionSkipped == 2 && ms.rows.first?.windowID == nil && ms.rows.first?.hits == 2
+                && mlines.count == 1 && mlines[0].contains("TuningReadout.record"), "\(mlines)")
+
+        // TRACK CAP: one past the cap evicts the lowest-ranked row, counted and logged.
+        let capped = TuningReadout()
+        var clines: [String] = []
+        capped.onLimit = { clines.append($0) }
+        for i in 0...TuningReadout.trackCapacity {
+            feed(capped, [det("FEMALE_BREAST_EXPOSED", i == 0 ? 0.55 : 0.95, x: 0.5, y: 0.5)],
+                at: t0 + Double(i) * 0.001, windows: [0: CGWindowID(100 + i)])
+        }
+        let caps = capped.snapshot(now: t0 + 1)
+        check("rows: past TuningReadout.trackCapacity (512) the lowest-ranked row is evicted, counted and logged by name",
+            TuningReadout.trackCapacity == 512 && caps.rows.count == TuningReadout.trackCapacity
+                && caps.tracksEvicted == 1 && !caps.rows.contains { $0.windowID == 100 }
+                && clines.count == 1 && clines[0].contains("TuningReadout.trackCapacity configured=512"),
+            "rows=\(caps.rows.count) evicted=\(caps.tracksEvicted) \(clines)")
+        check("rows: the eviction is said on the tab", UIDeveloperSettingsSection.tracksEvictedLine(caps).contains("1 rows evicted"))
+
+        // FREEZE: rows stop moving; after `freezeSecs` the freeze ends by itself.
+        let fr = TuningReadout()
+        let model = UIDevTuning(stateRoot: root, groupID: getegid(), base: base, baseSource: "defaults", readout: fr)
+        feed(fr, [fbe], at: t0, windows: [0: 7])
+        model.tick(now: t0)
+        model.freeze(now: t0)
+        feed(fr, [det("ANUS_EXPOSED", 0.99, x: 0.8, y: 0.2)], at: t0 + 1)
+        model.tick(now: t0 + 1)
+        let frozenRows = model.snapshot.rows.map(\.id)
+        check("rows: Freeze holds the rows (no new row, no re-rank) while the footer stays live",
+            model.frozenAt == t0 && frozenRows.count == 1 && model.freezeRemaining(now: t0 + 1) == 29)
+        model.tick(now: t0 + UIDevTuning.freezeSecs - 0.5)
+        check("rows: still frozen just before UIDevTuning.freezeSecs (30 s)",
+            model.frozenAt != nil && model.snapshot.rows.count == 1 && UIDevTuning.freezeSecs == 30)
+        model.tick(now: t0 + UIDevTuning.freezeSecs)
+        check("rows: the freeze ends by itself at 30 s and the rows re-rank (the new AE 0.99 on top)",
+            model.frozenAt == nil && model.snapshot.rows.first?.code == "AE" && model.snapshot.rows.count == 2,
+            "\(model.snapshot.rows.map(\.code))")
+        model.freeze(now: t0 + 31)
+        model.clearReadout(now: t0 + 31)
+        check("rows: Clear empties the rows and ends a freeze", model.snapshot.rows.isEmpty && model.frozenAt == nil)
+        // Copy: every row plus the footer; labels, numbers and app names only.
+        feed(fr, [fbe, mge], at: t0 + 40, windows: [0: 7])
+        model.tick(now: t0 + 40)
+        let text = UIDeveloperSettingsSection.readoutText(model.snapshot)
+        check("rows: Copy readout carries every row (full label, window, hits) and the footer lines",
+            text.contains("FEMALE_BREAST_EXPOSED, window 7, 1 hits") && text.contains("near miss")
+                && text.contains("Last curtain drop:") && text.contains("Threshold steps:"), text)
     }
 }

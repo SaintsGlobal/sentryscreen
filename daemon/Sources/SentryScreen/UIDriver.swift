@@ -1116,6 +1116,27 @@ final class UIDemoController {
                 raw: raw, filtered: filtered, tuning: policy, mode: .strict, blockFaces: false,
                 screen: screen, now: now - Double(i))
         }
+        // "Last 60 s" rows (2026-10-20): a curtained track (✓), a covered one
+        // (◼) and a near miss (○, 0.03 under its floor) in a fake window, at
+        // scores set FROM the policy's floors so the sample means the same
+        // thing whatever the shipped floors are. Synthetic boxes only.
+        func floor(_ l: String) -> Float { policy.standard[l]?.threshold ?? 0.5 }
+        let rows = [
+            Detection(label: "FEMALE_BREAST_EXPOSED", confidence: min(0.99, floor("FEMALE_BREAST_EXPOSED") + 0.04),
+                box: CGRect(x: 0.12, y: 0.62, width: 0.08, height: 0.12)),
+            Detection(label: "FEMALE_GENITALIA_EXPOSED", confidence: min(0.99, floor("FEMALE_GENITALIA_EXPOSED") + 0.08),
+                box: CGRect(x: 0.62, y: 0.12, width: 0.06, height: 0.09)),
+            Detection(label: "ANUS_EXPOSED", confidence: floor("ANUS_EXPOSED") - 0.03,
+                box: CGRect(x: 0.82, y: 0.62, width: 0.04, height: 0.06)),
+        ]
+        let rowFilter = policy.filter(rows, mode: .strict, blockFaces: false, screen: screen)
+        for i in 0..<4 {
+            t.readout.record(
+                raw: rows, filtered: rowFilter, tuning: policy, mode: .strict, blockFaces: false,
+                screen: screen, now: now - 6 + Double(i), blockedCount: rowFilter.blocked.count,
+                windows: [0: 4242, 1: 4242], drops: i == 2 ? [.init(windowID: 4242, indices: [0])] : [],
+                appName: { $0 == 4242 ? "Safari" : nil })
+        }
         t.readout.recordCurtain(action: "drop", windowID: 4242, app: "Safari", now: now - 3)
         t.tick(now: now)
     }
