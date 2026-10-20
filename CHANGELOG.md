@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Settings › Recent activity shows the three newest rows and scrolls to the rest
+  (still up to ten).
+- The "Start at login" row is gone. It only said that the system starts
+  SentryScreen at login, which is unchanged.
+- The menu bar icon can no longer be hidden: the "Show menu bar icon" setting is
+  gone, and so is the Control + Option + Command + S shortcut that brought a hidden
+  icon back. If an older install hid the icon, it reappears; the stored setting is
+  still read but ignored.
+
 ## 0.4.2 (build 29)
 
 Security follow-ups from the 0.4.1 review.

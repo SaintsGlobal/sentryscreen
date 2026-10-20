@@ -4988,26 +4988,25 @@ enum UISelfTest {
             _ banner: Bool,
             _ driver: Bool,
             _ admin: Bool,
-            _ icon: Bool,
             _ confirmation: Bool = false
         ) -> Bool {
             AppDelegate.statusToastIsShown(
                 bannerMode: banner, underUIDriver: driver,
-                isAdmin: admin, showMenuBarIcon: icon,
-                successConfirmationPending: confirmation)
+                isAdmin: admin, successConfirmationPending: confirmation)
         }
-        check("toast: admin + icon on + banner mode ⇒ shown",
-            shown(true, false, true, true))
+        // The 2026-08-28 "icon off ⇒ suppressed" row went with the setting
+        // (2026-10-20): the predicate no longer takes the legacy flag, so a
+        // stored `showMenuBarIcon: false` cannot suppress the toast.
+        check("toast: admin + banner mode ⇒ shown",
+            shown(true, false, true))
         check("toast: pending setup confirmation ⇒ suppressed",
-            !shown(true, false, true, true, true))
-        check("toast: menu-bar icon off ⇒ suppressed (an invisible install stays invisible)",
-            !shown(true, false, true, false))
+            !shown(true, false, true, true))
         check("toast: Standard (child) session ⇒ suppressed (durable shield is sufficient)",
-            !shown(true, false, false, true))
+            !shown(true, false, false))
         check("toast: not in --capture-loss banner mode ⇒ suppressed",
-            !shown(false, false, true, true))
+            !shown(false, false, true))
         check("toast: under the UI driver ⇒ suppressed (screenshots stay byte-stable)",
-            !shown(true, true, true, true))
+            !shown(true, true, true))
 
         check("capture-loss banner: Standard session with no parent surface ⇒ shown",
             AppDelegate.captureLossBannerIsShown(
@@ -5095,15 +5094,23 @@ enum UISelfTest {
     // MARK: 8c — child-session shield + restore grace (owner 2026-08-29)
 
     static func caseChildSessionAndRestoreGrace() {
-        // Status item: the child session gets the shield; the two other gates
-        // (icon setting, onboarding complete) are unchanged.
-        check("status item: Standard session + icon on + onboarding complete ⇒ wanted",
-            AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: true, onboardingComplete: true))
-        check("status item: icon off ⇒ not wanted, admin or not",
-            !AppDelegate.statusItemWanted(isAdmin: true, showMenuBarIcon: false, onboardingComplete: true)
-                && !AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: false, onboardingComplete: true))
+        // Status item: the child session gets the shield; onboarding complete
+        // is the one remaining gate. The icon setting is gone (2026-10-20).
+        check("status item: Standard or admin session + onboarding complete ⇒ wanted",
+            AppDelegate.statusItemWanted(isAdmin: false, onboardingComplete: true)
+                && AppDelegate.statusItemWanted(isAdmin: true, onboardingComplete: true))
         check("status item: onboarding incomplete ⇒ not wanted (setup window owns the parent surface)",
-            !AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: true, onboardingComplete: false))
+            !AppDelegate.statusItemWanted(isAdmin: false, onboardingComplete: false)
+                && !AppDelegate.statusItemWanted(isAdmin: true, onboardingComplete: false))
+        // An older settings.json that hid the icon still loads, keeps the key
+        // through a write, and hides nothing (statusItemWanted no longer
+        // reads it).
+        let legacy = #"{"version": 2, "pause": {"mode": "none"}, "showMenuBarIcon": false}"#
+        let (old, oldWhy) = UISettings.parse(Data(legacy.utf8))
+        check("status item: a legacy showMenuBarIcon false still loads and round-trips, and is not a gate",
+            old?.showMenuBarIcon == false && oldWhy == nil
+                && ((try? old!.encode()).flatMap { UISettings.parse($0).0 }?.showMenuBarIcon == false),
+            "\(String(describing: oldWhy))")
         // Popover: no mutating controls in a Standard session. The read-only
         // branch draws exactly one text control; everything that reaches
         // store.mutate / PinGate lives behind parentControlsAvailable.

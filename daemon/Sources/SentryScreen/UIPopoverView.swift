@@ -150,7 +150,6 @@ enum UISymbol {
     /// the two confirmations carry the shape of what they do.
     static let managed = "checkmark"
     static let turnOff = "shield.slash.fill"
-    static let hideIcon = "eye.slash.fill"
     /// "Remove SentryScreen…" (SPEC §8.1(7)): the row and its confirmation.
     static let remove = "trash.fill"
     /// Pause chooser button, the paused tile, Resume, the plans layer's Back,
@@ -162,7 +161,7 @@ enum UISymbol {
     static let deleteDigit = "delete.left"
 
     static let all = [lock, lockedOut, setPin, warning, error, writeError, devState,
-        commandLine, disclosure, managed, turnOff, hideIcon, remove, pause, resume, back, check, deleteDigit]
+        commandLine, disclosure, managed, turnOff, remove, pause, resume, back, check, deleteDigit]
 }
 
 /// Animations (spec §9.3).
@@ -1231,11 +1230,11 @@ struct UIActivitySettingsSection: View {
                             .uiControl("ui.activity.empty", kind: .text,
                                 read: { UIPopoverView.activityEmptyText })
                     }
-                    ForEach(Array(activity.items.enumerated()), id: \.offset) { i, item in
-                        if i > 0 || !activity.errors.isEmpty {
+                    if !activity.items.isEmpty {
+                        if !activity.errors.isEmpty {
                             Divider().padding(.leading, UIMetrics.sectionPadding)
                         }
-                        activityRow(item, index: i)
+                        itemList
                     }
                     if activity.truncated {
                         Divider().padding(.leading, UIMetrics.sectionPadding)
@@ -1266,6 +1265,39 @@ struct UIActivitySettingsSection: View {
                     read: { UIPopoverView.activityFooterText })
         }
     }
+
+    /// Owner 2026-10-20: the list shows `UIActivity.visibleRows` (3) rows and
+    /// scrolls to the rest; `UIActivity.rows` (10) is unchanged. Only the
+    /// item rows scroll — the error, empty and truncation rows and the
+    /// footer stay outside. The viewport is the visible rows' own minimum
+    /// height, so it scales with the text size; the rows' dividers are
+    /// overlays, so they add no height the viewport would have to guess.
+    /// Every row stays in the registry (a plain VStack, not lazy), and
+    /// `scrollto ui.activity.row.N` reaches the hidden ones
+    /// (`UIScrollAnchors.register(_:in:container:)`).
+    private var itemList: some View {
+        let shown = min(activity.items.count, UIActivity.visibleRows)
+        return ScrollView(.vertical) {
+            ScrollViewReader { proxy in
+                VStack(spacing: 0) {
+                    ForEach(Array(activity.items.enumerated()), id: \.offset) { i, item in
+                        activityRow(item, index: i)
+                            .overlay(alignment: .top) {
+                                if i > 0 { Divider().padding(.leading, UIMetrics.sectionPadding) }
+                            }
+                            .uiScrollAnchor("ui.activity.row.\(i)", in: proxy, container: Self.listID)
+                    }
+                }
+            }
+        }
+        .scrollIndicators(activity.items.count > UIActivity.visibleRows ? .visible : .hidden)
+        .frame(height: CGFloat(shown) * UIMetrics.activityRowHeight(scale: textScale))
+        .uiScrollAnchor(Self.listID)
+        .uiControl(Self.listID, kind: .text,
+            read: { [activity] in "\(min(activity.items.count, UIActivity.visibleRows)) of \(activity.items.count) rows visible" })
+    }
+
+    static let listID = "ui.activity.list"
 
     private func activityRow(_ item: ActivityItem, index: Int) -> some View {
         HStack(spacing: 8) {

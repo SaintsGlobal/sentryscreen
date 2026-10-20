@@ -161,15 +161,6 @@ final class UIState: ObservableObject {
     /// `.standard` until the pipeline exists — the popover cannot be opened
     /// before then, and the value is corrected in the same launch.
     @Published var basePolicy: PolicyMode = .standard
-    /// True once ⌘⌥⌃S (spec §9.4, Addendum 6B) is actually registered.
-    /// Registration is deliberately non-fatal — a collision must not take
-    /// protection down over a menu-bar icon — so the result has to reach the
-    /// UI or the hide-icon confirmation promises a hotkey this build does not
-    /// own and the failure lives only in run.jsonl. Set from the `register()`
-    /// return in AppDelegate.armRevealHotkey; false until then, and false
-    /// forever in a session that never arms it (non-admin sessions have no
-    /// status item, so nothing reads it there).
-    @Published var revealHotkeyArmed = false
     /// True when `--policy` pinned the run (spec §6: flags win, D1).
     /// Production never passes the flag; a dev run that does gets a disabled
     /// picker saying so instead of a control that silently loses.
