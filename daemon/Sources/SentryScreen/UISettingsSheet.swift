@@ -87,7 +87,7 @@ struct UIConfirm: Equatable {
     let title: String
     let body: String
     let confirmLabel: String
-    /// `ui.settings.showicon`: `.confirm`, `.cancel` and
+    /// e.g. `ui.settings.x`: `.confirm`, `.cancel` and
     /// `.note` hang off it (spec §10.2).
     let idPrefix: String
     let symbol: String
@@ -96,24 +96,6 @@ struct UIConfirm: Equatable {
     var confirmID: String { idPrefix + ".confirm" }
     var cancelID: String { idPrefix + ".cancel" }
     var noteID: String { idPrefix + ".note" }
-
-    /// Spec §9.4 — the reveal hotkey is the whole point of confirming: an
-    /// icon that vanishes with no way back is a bug report, not a setting.
-    /// Review 2026-09-29 (item 9): the keys in Apple's modifier order
-    /// (⌃⌥⌘; all four are line-break class AL, so they never wrap apart);
-    /// no hyphenated word to break; and the one real way back. The hotkey is
-    /// armed only in an administrator's session (`armRevealHotkey`), and
-    /// Settings cannot re-enable it because Settings lives in the hidden
-    /// popover, so the old "re-enable it in Settings" was not a path.
-    static let revealKeys = "\u{2303}\u{2325}\u{2318}S"
-    static let hideIcon = UIConfirm(
-        title: "Hide the SentryScreen icon?",
-        body: "To bring it back, sign in to an administrator account on this Mac "
-            + "and press \(revealKeys).",
-        confirmLabel: "Hide icon",
-        idPrefix: "ui.settings.showicon",
-        symbol: UISymbol.hideIcon)
-
 }
 
 /// The three pause presets (spec §9.2 rows; OWNER copy). Timed presets cap
@@ -281,18 +263,18 @@ final class UIActions: ObservableObject {
 
     /// The parent's answers to the two questions `uninstall.sh` accepts.
     /// Published so the confirmation's controls and the registry read one
-    /// source of truth (the `showIcon` row's rule).
+    /// source of truth.
     @Published var removeChoice = Uninstall.Choice()
     /// The Settings page on screen. On the actions object, not the panel's
     /// own @State: a PIN prompt or confirmation replaces the panel view and
     /// returns to a fresh one, and a parent who tapped Change PIN on App
-    /// must land back on App (settings-changepin.txt, hide-icon.txt). `nil`
+    /// must land back on App (settings-changepin.txt). `nil`
     /// until a page is shown: the panel then starts on
     /// `.general`.
     @Published var settingsTab: UISettingsTab?
     /// Whether General's "More settings" fold is open (Settings-General,
     /// Settings-App boards). Held here for the `settingsTab` reason: Change
-    /// PIN and Hide icon go through a PIN prompt or confirmation and must
+    /// PIN goes through a PIN prompt and must
     /// land back on the open fold. Shut on every `openSettings()`.
     @Published var moreSettingsOpen = false
     /// Where the removal has got to. `.idle` while the confirmation is still
@@ -582,8 +564,8 @@ final class UIActions: ObservableObject {
         diagnostics?.clearSendNotice()
     }
 
-    /// Puts a destructive confirmation in front of `body` (spec §9.4 hide
-    /// icon, §9.5 turn off). Cancel returns to `from` with `body` dropped.
+    /// Puts a destructive confirmation in front of `body`. No caller since
+    /// the hide-icon confirmation went (2026-10-20). Cancel returns to `from` with `body` dropped.
     func confirm(_ spec: UIConfirm, from: Layer, _ body: @escaping () -> Void) {
         writeError = nil
         returnLayer = from
@@ -813,23 +795,7 @@ final class UIActions: ObservableObject {
     /// `mode: untilRestart`, behind the confirmation copy and then the PIN.
     /// It replaces Quit deliberately — a Quit in a watchdog-supervised agent
     /// is a lie, the process is back inside 60 s.
-    /// Spec §9.4. Turning the icon OFF names the reveal path before it takes
-    /// effect; turning it back on is an ordinary gated write.
-    func setShowMenuBarIcon(_ show: Bool) {
-        guard show else {
-            confirm(.hideIcon, from: .settings) { [weak self] in
-                self?.requirePIN("Hide the SentryScreen menu bar icon.", returnTo: .settings) {
-                    [weak self] in self?.write { $0.showMenuBarIcon = false }
-                }
-            }
-            return
-        }
-        requirePIN("Show the SentryScreen icon in the menu bar.", returnTo: .settings) { [weak self] in
-            self?.write { $0.showMenuBarIcon = true }
-        }
-    }
-
-    /// "Review a diagnostic report…": behind the parent PIN when one is set,
+    /// "Review Report": behind the parent PIN when one is set,
     /// then the review layer, where only Send reaches the network.
     func reviewDiagnosticReport() {
         guard store.parentPIN != nil else {
@@ -845,6 +811,9 @@ final class UIActions: ObservableObject {
         guard let agent = diagnostics else { return }
         writeError = nil
         diagnosticsDraft = nil
+        // The status shows on this layer since 2026-10-20, so a previous
+        // report's "sent" must not greet a new review as if it were this one's.
+        agent.clearSendNotice()
         layer = .diagnosticsReview
         let issued = epoch
         agent.prepare { [weak self] draft in
@@ -863,12 +832,22 @@ final class UIActions: ObservableObject {
         layer = .settings
     }
 
-    /// The owner pressed Send on the review: the report goes once.
+    /// The owner pressed Send on the review: the report goes once. The
+    /// layer stays up, keeping the text that was sent on screen, and shows
+    /// the send status (2026-10-20; it used to drop back to Settings and
+    /// show the notice under the button there).
     func sendDiagnosticReport() {
-        guard let draft = diagnosticsDraft, layer == .diagnosticsReview else { return }
-        diagnosticsDraft = nil
-        layer = .settings
+        guard let draft = diagnosticsDraft, layer == .diagnosticsReview,
+            Self.diagnosticsCanSend(draft: true, send: diagnosticsSend)
+        else { return }
         diagnostics?.send(draft)
+    }
+
+    /// Send is offered only for a built report that has not gone yet: once
+    /// any send state exists for this review (`openDiagnosticReview` clears
+    /// it), the report is sending or has been sent once.
+    static func diagnosticsCanSend(draft: Bool, send: DiagnosticsSendState?) -> Bool {
+        draft && send == nil
     }
 
     func setPolicy(_ mode: PolicyMode) {
@@ -1370,7 +1349,9 @@ struct UISettingsPanelView: View {
 
     /// Settings-General board, verbatim.
     static let moreTitle = "More settings"
-    static let moreCaption = "PIN, menu bar icon, remove"
+    /// 2026-10-20: "menu bar icon" left with the Show menu bar icon row;
+    /// the caption names what the fold still holds.
+    static let moreCaption = "PIN, diagnostics, remove"
 
     /// The fold's header: an outlined row with a chevron. Closed, it carries
     /// the caption naming what is inside; open, only the title.
@@ -1411,10 +1392,6 @@ struct UISettingsPanelView: View {
                     changePIN
                     rowDivider
                     forgotPIN
-                    rowDivider
-                    startAtLogin
-                    rowDivider
-                    showIcon
                     rowDivider
                     version
                 }
@@ -1507,99 +1484,6 @@ struct UISettingsPanelView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Spec §9.4: NON-INTERACTIVE. A Toggle that cannot toggle would be a
-    /// lie, so this row states the fact and says who owns it — the same
-    /// shape macOS itself uses for a managed setting. Registered as `.text`
-    /// with `enabled: false`, which is what `assertenabled … false` reads.
-    private var startAtLogin: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text("Start at login")
-                    .uiFont(.callout)
-                Spacer(minLength: 8)
-                HStack(spacing: 4) {
-                    Image(systemName: UISymbol.managed)
-                        .uiFont(.caption, weight: .semibold)
-                        .accessibilityHidden(true)
-                    Text(Self.managedText)
-                }
-                .uiFont(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Text(Self.startAtLoginCaption)
-                .uiFont(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .uiControl("ui.settings.startatlogin", kind: .text,
-            read: { "Start at login — " + Self.managedText },
-            enabled: { false })
-    }
-
-    /// Spec §9.4. The row is DISABLED when ⌘⌥⌃S did not register: the
-    /// confirmation's promise ("Press ⌘⌥⌃S to bring it back") is the only
-    /// reason hiding is offered at all, and `armRevealHotkey` is deliberately
-    /// non-fatal on a collision — so without this the parent hides the icon on
-    /// a promise the build cannot keep, and the only way back is a sudo
-    /// command named in a log they will never read. Disabled-with-a-reason
-    /// rather than alternate copy: `UIConfirm.hideIcon` stays the spec's
-    /// verbatim text, and the failure is stated where the decision is made.
-    ///
-    /// Only the hide direction is at stake, and it is the only reachable one:
-    /// the panel needs an icon to open, so `showMenuBarIcon` is always true
-    /// here.
-    private var showIcon: some View {
-        // One flag behind the SwiftUI `.disabled`, the caption and the
-        // registry's `enabled` closure — three mechanisms that drift the
-        // moment any of them derives the answer its own way.
-        let canHide = state.revealHotkeyArmed
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text("Show menu bar icon")
-                    .uiFont(.callout)
-                Spacer(minLength: 8)
-                Toggle("Show menu bar icon", isOn: Binding(
-                    get: { state.settings.showMenuBarIcon },
-                    set: { actions.setShowMenuBarIcon($0) }))
-                    // No mirror @State behind it: the binding reads the store's
-                    // value, so a cancelled confirmation snaps the switch back by
-                    // construction instead of needing an undo path.
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-                    .disabled(!canHide)
-            }
-            .frame(minHeight: UIMetrics.rowHeight(scale: textScale))
-            if !canHide {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Image(systemName: UISymbol.warning)
-                        .accessibilityHidden(true)
-                    Text(Self.noRevealHotkeyCaption)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .uiFont(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
-                // Its own id, like `ui.sensitivity.pinned`: the toggle's
-                // `read()` is "on"/"off" and must stay that, so the reason a
-                // control is disabled needs somewhere of its own to be
-                // asserted. Registered only while it is on screen.
-                .uiControl("ui.settings.showicon.nohotkey", kind: .text,
-                    read: { Self.noRevealHotkeyCaption })
-            }
-        }
-        .padding(.horizontal, UIMetrics.sectionPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .uiControl("ui.settings.showicon", kind: .toggle,
-            read: { state.settings.showMenuBarIcon ? "on" : "off" },
-            activate: { actions.setShowMenuBarIcon(!state.settings.showMenuBarIcon) },
-            enabled: { state.revealHotkeyArmed })
-    }
-
     /// Spec §9.4: the build, and nothing internal beside it. The model file
     /// name and the state-root path were rows here until 2026-09-07 (owner):
     /// they are developer facts, not parent facts.
@@ -1620,21 +1504,8 @@ struct UISettingsPanelView: View {
     }
 
     static let changePinLabel = "Change PIN…"
-    /// Spec §9.4, verbatim.
-    static let managedText = "Managed by the system"
-    static let startAtLoginCaption = "SentryScreen is installed as a system LaunchAgent and "
-        + "starts for every user at login. Removing it requires an administrator."
-    /// Why hiding is unavailable. Names the cause (the key is taken) and the
-    /// consequence (there would be no way back), which is exactly what the
-    /// confirmation would otherwise have promised.
-    /// `UIConfirm.revealKeys`, not `HotkeyCenter.revealKey.label`
-    /// ("Cmd+Opt+Ctrl+S"): that label is the log's spelling, and this line
-    /// has to read as the same key the confirmation names.
     /// Says what a parent needs before they press: the Mac's password, not the PIN.
     static let removeCaption = "Removing SentryScreen needs an administrator name and password."
-
-    static let noRevealHotkeyCaption = "Another app owns \(UIConfirm.revealKeys), so a hidden icon could not be "
-        + "brought back. Hiding is unavailable until that key is free."
 }
 
 // MARK: - Confirmation (spec §9.4 hide icon, §9.5 turn off)

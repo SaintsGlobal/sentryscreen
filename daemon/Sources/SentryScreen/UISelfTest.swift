@@ -5002,26 +5002,25 @@ enum UISelfTest {
             _ banner: Bool,
             _ driver: Bool,
             _ admin: Bool,
-            _ icon: Bool,
             _ confirmation: Bool = false
         ) -> Bool {
             AppDelegate.statusToastIsShown(
                 bannerMode: banner, underUIDriver: driver,
-                isAdmin: admin, showMenuBarIcon: icon,
-                successConfirmationPending: confirmation)
+                isAdmin: admin, successConfirmationPending: confirmation)
         }
-        check("toast: admin + icon on + banner mode ⇒ shown",
-            shown(true, false, true, true))
+        // The 2026-08-28 "icon off ⇒ suppressed" row went with the setting
+        // (2026-10-20): the predicate no longer takes the legacy flag, so a
+        // stored `showMenuBarIcon: false` cannot suppress the toast.
+        check("toast: admin + banner mode ⇒ shown",
+            shown(true, false, true))
         check("toast: pending setup confirmation ⇒ suppressed",
-            !shown(true, false, true, true, true))
-        check("toast: menu-bar icon off ⇒ suppressed (an invisible install stays invisible)",
-            !shown(true, false, true, false))
+            !shown(true, false, true, true))
         check("toast: Standard (child) session ⇒ suppressed (durable shield is sufficient)",
-            !shown(true, false, false, true))
+            !shown(true, false, false))
         check("toast: not in --capture-loss banner mode ⇒ suppressed",
-            !shown(false, false, true, true))
+            !shown(false, false, true))
         check("toast: under the UI driver ⇒ suppressed (screenshots stay byte-stable)",
-            !shown(true, true, true, true))
+            !shown(true, true, true))
 
         check("capture-loss banner: Standard session with no parent surface ⇒ shown",
             AppDelegate.captureLossBannerIsShown(
@@ -5109,15 +5108,23 @@ enum UISelfTest {
     // MARK: 8c — child-session shield + restore grace (owner 2026-08-29)
 
     static func caseChildSessionAndRestoreGrace() {
-        // Status item: the child session gets the shield; the two other gates
-        // (icon setting, onboarding complete) are unchanged.
-        check("status item: Standard session + icon on + onboarding complete ⇒ wanted",
-            AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: true, onboardingComplete: true))
-        check("status item: icon off ⇒ not wanted, admin or not",
-            !AppDelegate.statusItemWanted(isAdmin: true, showMenuBarIcon: false, onboardingComplete: true)
-                && !AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: false, onboardingComplete: true))
+        // Status item: the child session gets the shield; onboarding complete
+        // is the one remaining gate. The icon setting is gone (2026-10-20).
+        check("status item: Standard or admin session + onboarding complete ⇒ wanted",
+            AppDelegate.statusItemWanted(isAdmin: false, onboardingComplete: true)
+                && AppDelegate.statusItemWanted(isAdmin: true, onboardingComplete: true))
         check("status item: onboarding incomplete ⇒ not wanted (setup window owns the parent surface)",
-            !AppDelegate.statusItemWanted(isAdmin: false, showMenuBarIcon: true, onboardingComplete: false))
+            !AppDelegate.statusItemWanted(isAdmin: false, onboardingComplete: false)
+                && !AppDelegate.statusItemWanted(isAdmin: true, onboardingComplete: false))
+        // An older settings.json that hid the icon still loads, keeps the key
+        // through a write, and hides nothing (statusItemWanted no longer
+        // reads it).
+        let legacy = #"{"version": 2, "pause": {"mode": "none"}, "showMenuBarIcon": false}"#
+        let (old, oldWhy) = UISettings.parse(Data(legacy.utf8))
+        check("status item: a legacy showMenuBarIcon false still loads and round-trips, and is not a gate",
+            old?.showMenuBarIcon == false && oldWhy == nil
+                && ((try? old!.encode()).flatMap { UISettings.parse($0).0 }?.showMenuBarIcon == false),
+            "\(String(describing: oldWhy))")
         // Popover: no mutating controls in a Standard session. The read-only
         // branch draws exactly one text control; everything that reaches
         // store.mutate / PinGate lives behind parentControlsAvailable.
@@ -5626,6 +5633,46 @@ enum UISelfTest {
         }
         check("glyph: the four states draw four different images (owner: separate icons)",
             Set(seen).count == 4, "distinct=\(Set(seen).count)")
+
+        // Green check (2026-10-20): only Protecting with every setup check
+        // passing; every other state keeps its own badge or none.
+        for glyph in [UIGlyph.protecting, .paused, .degraded, .starting] {
+            for healthy in [false, true] {
+                let ok = UIState.menuBarBadgeOK(glyph: glyph, setupHealthy: healthy)
+                check("glyph: green check for \(glyph.rawValue), setup healthy \(healthy)",
+                    ok == (glyph == .protecting && healthy), "ok=\(ok)")
+                let badge = SentryLanternGlyph.badge(for: glyph, allGood: ok)
+                let want: SentryLanternGlyph.Badge = switch glyph {
+                case .protecting: healthy ? .ok : .none
+                case .paused: .pause
+                case .degraded: .alert
+                case .starting: .none
+                }
+                check("glyph: \(glyph.rawValue) badge with setup healthy \(healthy) is \(want)",
+                    badge == want, "badge=\(badge)")
+            }
+        }
+        let plain = UIStatusItem.glyphImage(.protecting, description: "d")
+        let good = UIStatusItem.glyphImage(.protecting, allGood: true, description: "d")
+        check("glyph: the green-check face is not a template (it carries green)", !good.isTemplate)
+        check("glyph: the green-check face is the same 16x16 pt size", good.size == plain.size, "\(good.size)")
+        check("glyph: the green-check face differs from plain Protecting",
+            good.tiffRepresentation != plain.tiffRepresentation)
+        // setupHealthy needs EVERY check; each one alone failing turns it off.
+        func healthy(installed: Bool = true, screen: Bool = true,
+            components: UIOnboardingComponentHealth = .healthy, services: Bool? = true, failed: Bool = false) -> Bool
+        {
+            UIOnboardingRuntime.setupHealthy(installedMode: installed, screenRecordingApproved: screen,
+                components: components, servicesVerified: services, failedHealthSource: failed)
+        }
+        check("glyph: setup healthy when every check passes", healthy())
+        check("glyph: a development run is never all good", !healthy(installed: false))
+        check("glyph: no Screen Recording → no green check", !healthy(screen: false))
+        check("glyph: a missing component → no green check",
+            !healthy(components: .unhealthy(reason: "x")))
+        check("glyph: launchd jobs not yet checked → no green check", !healthy(services: nil))
+        check("glyph: launchd jobs failed → no green check", !healthy(services: false))
+        check("glyph: an active health failure → no green check", !healthy(failed: true))
     }
 }
 

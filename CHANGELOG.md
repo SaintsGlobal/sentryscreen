@@ -21,6 +21,22 @@
   Covers let clicks through, so the old "click here" sent the click to the covered
   content itself. The title bar is never covered, so clicking it only brings the
   window to the front.
+- Settings › Recent activity shows the three newest rows and scrolls to the rest
+  (still up to ten).
+- The "Start at login" row is gone. It only said that the system starts
+  SentryScreen at login, which is unchanged.
+- The menu bar icon can no longer be hidden: the "Show menu bar icon" setting is
+  gone, and so is the Control + Option + Command + S shortcut that brought a hidden
+  icon back. If an older install hid the icon, it reappears; the stored setting is
+  still read but ignored.
+- Settings › Diagnostics is now a single **Review Report** link. What a report
+  contains and never contains moved to the top of the review, so it is read before
+  Send. After Send the review stays open and says whether the report arrived;
+  Close returns to Settings.
+- The menu bar icon shows a green check while SentryScreen is protecting and every
+  setup check passes: Screen Recording is allowed, the installed parts are present
+  and both background jobs are registered. If any check fails the check mark goes
+  away; paused and needs-attention badges are unchanged.
 
 ## 0.4.2 (build 29)
 

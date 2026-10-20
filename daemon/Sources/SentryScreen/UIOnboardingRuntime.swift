@@ -914,9 +914,46 @@ final class UIOnboardingRuntime {
         reportHealth(.lost(since: Date(), reason: reason))
     }
 
+    /// The last `UIOnboardingServiceChecker` answer this process got (both
+    /// launchd jobs registered): nil until it has run. Read by `setupHealthy`.
+    private(set) var servicesVerified: Bool?
+
+    /// Everything onboarding checks before it calls setup complete, as of
+    /// now, for the menu-bar green check (2026-10-20). REUSES onboarding's
+    /// own checks, no new ones: Screen Recording (`CGPreflightScreenCaptureAccess`,
+    /// the call `captureWasLost` uses, and this runtime's own view of it),
+    /// the installed components including both launchd plists
+    /// (`UIOnboardingInstallationInspector.componentHealth`, file stats,
+    /// cheap enough for the 1 Hz tick), and the last launchd job check
+    /// (`servicesVerified`; launchctl is NOT re-run per tick). The agent
+    /// "running" is this process. A development run (not installed) is
+    /// never "all good".
+    var setupHealthy: Bool {
+        Self.setupHealthy(
+            installedMode: installedMode,
+            screenRecordingApproved: screenRecordingApproved && CGPreflightScreenCaptureAccess(),
+            components: UIOnboardingInstallationInspector.componentHealth(
+                installedMode: installedMode, modelPath: modelPath),
+            servicesVerified: servicesVerified,
+            failedHealthSource: failedHealthSource != nil)
+    }
+
+    nonisolated static func setupHealthy(
+        installedMode: Bool, screenRecordingApproved: Bool, components: UIOnboardingComponentHealth,
+        servicesVerified: Bool?, failedHealthSource: Bool
+    ) -> Bool {
+        installedMode && screenRecordingApproved && components == .healthy
+            && servicesVerified == true && !failedHealthSource
+    }
+
     private func checkRequiredServices(epoch: Int) {
         let expectedCaptureGeneration = captureGenerationEpoch
         serviceChecker.run { [weak self] result in
+            if let self {
+                // Recorded before the staleness guard: whatever this run was
+                // for, it is still the newest answer about the two jobs.
+                if case .success = result { self.servicesVerified = true } else { self.servicesVerified = false }
+            }
             guard let self,
                 self.verificationDeadlineActive,
                 self.frameDeadlineEpoch == epoch,

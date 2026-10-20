@@ -4834,7 +4834,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         syncStatusItem()
-        armRevealHotkey()
         store.onChange = { [weak self] settings in
             self?.uiState?.settings = settings
             self?.uiState?.hasParentPIN = store.parentPIN != nil
@@ -4848,7 +4847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 self?.onboardingRuntime?.settingsDidChange()
             }
-            // showMenuBarIcon may have been written by the other admin
+            // Onboarding completion may have been written by the other admin
             // session; the icon follows within one poll tick.
             self?.syncStatusItem()
         }
@@ -4867,6 +4866,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.republishIfPauseChanged()
             self.pollTuningFile(stateRoot: store.root, log: log)
             self.devTuning?.tick()
+            // Menu-bar green check (UIState.setupHealthy): published only on
+            // a change, so the 1 Hz tick does not repaint the status item.
+            let healthy = MainActor.assumeIsolated { self.onboardingRuntime?.setupHealthy ?? false }
+            if state.setupHealthy != healthy { state.setupHealthy = healthy }
             // Detection view TTL and countdown (1 Hz is the countdown's own
             // resolution; the TTL can land up to one tick late).
             self.uiActions?.detectionView.tick()
@@ -4878,7 +4881,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 state.isAdmin = true
                 log("ui", "session uid=\(getuid()) user=\(user) admin=true (on re-check)")
                 self.syncStatusItem()
-                self.armRevealHotkey()
             }
         }
         store.startPolling()
@@ -4895,11 +4897,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// directory and settings.json are unwritable there by the tamper model,
     /// so no control that could reach store.mutate or the PIN gate is drawn.
     /// The green toast keeps its own admin gate (statusToastIsShown, ASSUMED).
-    static func statusItemWanted(
-        isAdmin: Bool, showMenuBarIcon: Bool, onboardingComplete: Bool
-    ) -> Bool {
+    /// The icon CANNOT be hidden since 2026-10-20 (owner): the "Show menu bar
+    /// icon" setting, and with it the ⌘⌥⌃S reveal hotkey that brought a
+    /// hidden icon back, are gone. A `showMenuBarIcon: false` left in an
+    /// older settings.json still loads (`UISettingsStore`) and is ignored
+    /// here on purpose.
+    static func statusItemWanted(isAdmin: Bool, onboardingComplete: Bool) -> Bool {
         _ = isAdmin
-        return showMenuBarIcon && onboardingComplete
+        return onboardingComplete
     }
 
     private func syncStatusItem() {
@@ -4917,9 +4922,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || state.settings.onboarding.completedAt != nil
             || state.settings.readOnly
         let want = Self.statusItemWanted(
-            isAdmin: state.isAdmin,
-            showMenuBarIcon: state.settings.showMenuBarIcon,
-            onboardingComplete: onboardingComplete)
+            isAdmin: state.isAdmin, onboardingComplete: onboardingComplete)
         if want, statusItem == nil {
             statusItem = UIStatusItem(state: state, actions: actions, activity: activity)
             // §9.1: the reason an icon is or is not there must be answerable
@@ -4929,91 +4932,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.remove()
             statusItem = nil
             uiLog?("ui", "status item removed (admin=\(state.isAdmin) "
-                + "showMenuBarIcon=\(state.settings.showMenuBarIcon) "
                 + "onboardingComplete=\(onboardingComplete))")
-        }
-    }
-
-    /// True once registration has been ATTEMPTED. HotkeyCenter has no
-    /// unregister, so the Addendum-5 admin re-check must not register a second
-    /// handler every tick. Deliberately not named `armed`: whether the hotkey
-    /// actually exists is `UIState.revealHotkeyArmed`, and conflating the two
-    /// is how the confirmation came to promise a key nothing had registered.
-    private var revealHotkeyAttempted = false
-
-    /// Retry delay for the popover open the reveal hotkey performs. DERIVED
-    /// from UIStatusItem.open's receipt: a status item created on this
-    /// run-loop turn has a zero-height menu-bar window and NSPopover.show
-    /// silently does nothing, which is exactly the case the hotkey creates
-    /// (icon hidden ⇒ item constructed right here). 0.2 s is ~12 display
-    /// refreshes at 60 Hz, far past the one turn the layout needs, and is
-    /// paid only on this path.
-    static let revealRetrySecs: TimeInterval = 0.2
-
-    /// ⌘⌥⌃S (spec §9.4, Addendum 6B): the documented way back from a hidden
-    /// icon. ADMIN sessions only — a child's session must not be able to
-    /// summon the parent controls — and never fatal: unlike the panic and
-    /// inject hotkeys, a collision here must not take protection down to
-    /// restore a menu-bar icon, so the failure is logged with the recovery
-    /// command instead of calling die().
-    private func armRevealHotkey() {
-        guard !revealHotkeyAttempted, uiState?.isAdmin == true else { return }
-        revealHotkeyAttempted = true
-        let result = HotkeyCenter.shared.register(keyCode: HotkeyCenter.revealKey.code) {
-            [weak self] in self?.revealStatusItem()
-        }
-        // §9.4's whole point: the settings row reads this and refuses to hide
-        // an icon it could not bring back, instead of the failure being
-        // visible only to whoever later reads run.jsonl.
-        uiState?.revealHotkeyArmed = result.isBound
-        guard case .failed(let status) = result else {
-            uiLog?("ui", "reveal hotkey \(HotkeyCenter.revealKey.label) registered")
-            return
-        }
-        uiLog?("ui", "reveal hotkey \(HotkeyCenter.revealKey.label) REGISTRATION FAILED "
-            + "(RegisterEventHotKey status \(HotkeyRegistration.describe(status))) — a hidden icon "
-            + "can still be restored with: sudo "
-            + "\"/Library/Application Support/SentryScreen/json-tool.sh\" set "
-            + "\"\(UISettingsStore.productionRoot)/\(UISettingsStore.fileName)\" "
-            + "showMenuBarIcon true")
-    }
-
-    /// Sets `showMenuBarIcon = true` and opens the popover (spec §9.4). Not
-    /// PIN-gated: it only makes a control visible again, and the mutations
-    /// behind it stay gated.
-    private func revealStatusItem(
-        source: String = "reveal hotkey \(HotkeyCenter.revealKey.label)"
-    ) {
-        guard let state = uiState, let store = settingsStore else { return }
-        if !state.settings.showMenuBarIcon {
-            do {
-                // mutate() notifies in-process observers synchronously, so
-                // syncStatusItem below already sees the new value.
-                try store.mutate { $0.showMenuBarIcon = true }
-            } catch {
-                uiLog?("ui", "reveal hotkey: could not write showMenuBarIcon at "
-                    + "\(store.path): \(error)")
-                return
-            }
-        }
-        syncStatusItem()
-        uiLog?("ui", "\(source) requested parent Settings for "
-            + "\(AdminCheck.currentUserLabel()) — icon shown")
-        openStatusPopover(retries: 1)
-    }
-
-    private func openStatusPopover(retries: Int) {
-        guard let item = statusItem else {
-            uiLog?("ui", "reveal hotkey: no status item to open")
-            return
-        }
-        guard let why = item.open() else { return }
-        guard retries > 0 else {
-            uiLog?("ui", "reveal hotkey: popover did not open (\(why))")
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revealRetrySecs) { [weak self] in
-            self?.openStatusPopover(retries: retries - 1)
         }
     }
 
@@ -5035,15 +4954,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// - `bannerMode` / `underUIDriver`: the original OWNER 2026-08-26 gates —
     ///   the toast belongs to `--capture-loss banner`, and the UI driver's
     ///   screenshots must stay byte-stable.
-    /// - `isAdmin` / `showMenuBarIcon`: ADDED 2026-08-28 (review). The
-    ///   previous comment claimed the toast fired "only if the icon is shown"
-    ///   while the code gated on `--capture-loss banner` alone, so the claim
-    ///   was false in two configurations. ASSUMED, pending owner confirmation
-    ///   (the owner tested the toast in an admin session with the icon on, and
-    ///   never in either of these): an owner who turned the menu-bar icon OFF
-    ///   asked for an invisible install. A Standard session already has its
-    ///   durable shield, so a transient green good-news panel adds interruption
-    ///   without adding state. Suppress both cases.
+    /// - `isAdmin`: ADDED 2026-08-28 (review). ASSUMED, pending owner
+    ///   confirmation (the owner tested the toast in an admin session only):
+    ///   a Standard session already has its durable shield, so a transient
+    ///   green good-news panel adds interruption without adding state.
+    ///   The 2026-08-28 `showMenuBarIcon` gate went with the setting
+    ///   (2026-10-20): the icon can no longer be hidden, and a stored
+    ///   `false` from an older settings.json must not keep suppressing it.
     /// `successConfirmationPending` prevents the short green toast from
     /// competing with the one-time completion window. Also: `isAdmin` is
     /// resolved in `startSettings()` (called before `startPipeline()`), so it
@@ -5054,18 +4971,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// NOT suppress the `state.captureHealth = next` assignment. A false
     /// reading falls past the early return to the normal assignment below;
     /// moving that assignment inside the branch would leave a Standard
-    /// session (or an icon-off install) never reaching `.protecting` at all.
+    /// session never reaching `.protecting` at all.
     /// Neither this selftest nor the gate would see that — they check the
     /// predicate and the pixels, not the state machine's exit path.
     static func statusToastIsShown(
         bannerMode: Bool,
         underUIDriver: Bool,
         isAdmin: Bool,
-        showMenuBarIcon: Bool,
         successConfirmationPending: Bool
     ) -> Bool {
-        bannerMode && !underUIDriver && isAdmin && showMenuBarIcon
-            && !successConfirmationPending
+        bannerMode && !underUIDriver && isAdmin && !successConfirmationPending
     }
 
     /// Pure surface-arbitration policy. Standard sessions and development
@@ -5313,7 +5228,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bannerMode: opts.captureLossBanner,
                 underUIDriver: UIDriver.scriptPath != nil,
                 isAdmin: state.isAdmin,
-                showMenuBarIcon: state.settings.showMenuBarIcon,
                 successConfirmationPending: MainActor.assumeIsolated {
                     onboardingRuntime?.successConfirmationPending == true
                 })

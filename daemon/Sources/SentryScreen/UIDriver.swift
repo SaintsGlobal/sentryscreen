@@ -29,14 +29,12 @@ struct DemoState: Equatable {
     var pin = Pin.set
     var activity = 3
     var admin = true
+    /// Writes the LEGACY `showMenuBarIcon` into the demo's settings.json.
+    /// Since 2026-10-20 nothing hides the icon, so `icon false` is the
+    /// "older file says hide" case and the icon must still be there.
     var icon = true
     var devstate = false
-    /// Whether ⌘⌥⌃S registered (production: the `register()` return, spec
-    /// §9.4). Default true because that is the production norm; `hotkey
-    /// false` is the collision path, where Settings must refuse to hide the
-    /// icon rather than promise a key nothing owns.
-    var hotkey = true
-    /// `diagnostics` key: the notice under the review button.
+    /// `diagnostics` key: the send status on the review layer (2026-10-20; it was under the review button).
     var sendNotice: DiagnosticsSendState? = nil
     /// `readout sample|empty`: fills the Developer
     /// tab's 60 s readout with injected detections and a curtain drop so a
@@ -127,14 +125,17 @@ struct DemoState: Equatable {
                 return "activity must be 0…\(Self.maxActivity)"
             }
             activity = n
-        case "admin", "icon", "devstate", "hotkey":
+        case "admin", "icon", "devstate":
             guard let b = Bool(value) else { return "\(key) must be true|false" }
             switch key {
             case "admin": admin = b
             case "icon": icon = b
-            case "devstate": devstate = b
-            default: hotkey = b
+            default: devstate = b
             }
+        case "hotkey":
+            // Refused by name, not as an unknown key: a script still passing
+            // it was written for the removed hide-icon path.
+            return "hotkey was removed 2026-10-20 with the reveal hotkey (the menu bar icon can no longer be hidden)"
         case "screenrecording":
             guard value == "on" || value == "off" else { return "screenrecording must be on|off" }
             screenRecordingOff = value == "off"
@@ -1048,10 +1049,9 @@ final class UIDemoController {
             self?.state.settings = s
             self?.state.hasParentPIN = self?.store.parentPIN != nil
             // Production's UISettingsStore.onChange → AppDelegate.syncStatusItem:
-            // a UI write of showMenuBarIcon tears the item — and the popover
-            // standing on it — down. The demo has to do the same, or the
-            // slice's own acceptance script asserts a path that exists only
-            // here (spec §10.1: the real popover on fake state, not a mock).
+            // the demo re-derives the item on every write too, or the slice's
+            // own acceptance script asserts a path that exists only here
+            // (spec §10.1: the real popover on fake state, not a mock).
             self?.syncItem()
         }
         // The demo runs the production tick too (spec §10.1: --ui-demo is the
@@ -1143,9 +1143,6 @@ final class UIDemoController {
         state.policyPinned = demo.policy == .pinnedStrict
         state.basePolicy = demo.policy == .pinnedStrict ? .strict : .standard
         state.setRecentEvents(demo.activityItems())
-        // What AppDelegate.armRevealHotkey publishes in production; `hotkey
-        // false` is the collision the settings row must refuse to hide on.
-        state.revealHotkeyArmed = demo.hotkey
         actions.showDemoSendState(demo.sendNotice)
         applyReadout()
         var err: String?
@@ -1164,12 +1161,11 @@ final class UIDemoController {
 
     /// One owner for the demo's status item, the same predicate production
     /// uses (AppDelegate.syncStatusItem). Demo state decides the icon, not the
-    /// real session (spec §10.1) — `admin false` / `icon false` exercise the
-    /// no-icon path — but it reaches here through settings.json, so a write
-    /// from the popover's own controls removes the item exactly as it does in
-    /// production.
+    /// real session (spec §10.1) — `admin false` exercises the no-icon path.
+    /// The legacy `showMenuBarIcon` is ignored here as in production
+    /// (2026-10-20), so `icon false` must leave the item in place.
     private func syncItem() {
-        let want = state.isAdmin && state.settings.showMenuBarIcon
+        let want = state.isAdmin
         if want, statusItem == nil {
             statusItem = UIStatusItem(state: state, actions: actions, activity: activity)
             statusItem?.setAppearance(appearance)
