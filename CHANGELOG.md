@@ -38,8 +38,10 @@
   Close returns to Settings.
 - The menu bar icon shows a green check while SentryScreen is protecting and every
   setup check passes: Screen Recording is allowed, the installed parts are present
-  and both background jobs are registered. If any check fails the check mark goes
-  away; paused and needs-attention badges are unchanged.
+  and both background jobs are registered. The jobs are re-checked every 30
+  seconds while the app runs, and the check also needs a live screen capture. If
+  any check fails the check mark goes away; paused and needs-attention badges are
+  unchanged.
 - Settings › Developer › "Last 60 s" now lists one row per detection track (a
   class in one window at one place on screen) instead of per-class totals. Rows
   are ranked by their best score, fading with age (half-life 15 s), and re-sorted
