@@ -1423,7 +1423,9 @@ struct UIDeveloperSettingsSection: View {
     static let valueInset: CGFloat = labelWidth + 6
 
     static let stepsRowLabel = "size steps"
-    static let stepsPlaceholder = "none — e.g. 64:0.90, 128:0.95"
+    /// Short enough for the field at the popover's width ("none — e.g. …"
+    /// clipped, VM render 2026-10-20); empty already reads as none.
+    static let stepsPlaceholder = "e.g. 64:0.90, 128:0.95"
     static let stepsClearLabel = "Clear"
     /// The steps fields' tooltip (eight fields share the grammar; as a
     /// paragraph on the tab it was six lines over every class):

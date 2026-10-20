@@ -1200,6 +1200,11 @@ struct UISettingsPanelView: View {
                         page
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // A page opens at its top: switching tabs kept the old
+                    // page's offset, so Developer could open mid-page under
+                    // a scrolled General (VM render 2026-10-20).
+                    .id(Self.pageTop)
+                    .onChange(of: tab) { _, _ in proxy.scrollTo(Self.pageTop, anchor: .top) }
                     .onAppear { UIScrollAnchors.shared.proxy = proxy }
                     .onDisappear { UIScrollAnchors.shared.proxy = nil }
                     // Page height, for the driver's `assertfits` fold report.
@@ -1266,6 +1271,7 @@ struct UISettingsPanelView: View {
 
     static let title = "Settings"
     static let scrollSpace = "ui.settings.scroll"
+    static let pageTop = "ui.settings.page.top"
     /// A page this close to fitting reads as fitting: 4 pt is under one line
     /// of `.caption` padding, so the cue never flickers on rounding. ASSUMED,
     /// not measured: no installed page has been seen within 4 pt of fitting.
