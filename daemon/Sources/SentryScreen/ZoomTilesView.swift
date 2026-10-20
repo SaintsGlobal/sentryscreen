@@ -454,6 +454,9 @@ struct UIDevTilesRow: View {
         }
         .onAppear { tiles.setVisible(true) }
         .onDisappear { tiles.setVisible(false) }
+        // UI scripts scroll here to render the open row (`scrollto
+        // ui.settings.developer.tiles`).
+        .uiScrollAnchor(Self.idPrefix)
     }
 
     @ViewBuilder private var content: some View {
