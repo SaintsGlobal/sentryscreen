@@ -18,14 +18,16 @@ extension UISelfTest {
 
         // --- 0. rejections / withheld (the withheld tripwire's stage names) ---
         do {
-            let fbe = det("FEMALE_BREAST_EXPOSED", 0.85, big)
+            // 0.92: above the shipped 0.90 FBE floor (2026-10-20), under the
+            // raised 0.95 one — the same gap the 0.85/0.9 pair had at 0.5.
+            let fbe = det("FEMALE_BREAST_EXPOSED", 0.92, big)
             let fbc = det("FEMALE_BREAST_COVERED", 0.7, big)
             let face = det("FACE_FEMALE", 0.9, big)
             let screen = CGSize(width: 1920, height: 1080)
             var raised = d
-            raised.standard["FEMALE_BREAST_EXPOSED"]?.threshold = 0.9
+            raised.standard["FEMALE_BREAST_EXPOSED"]?.threshold = 0.95
             let r = raised.rejections([fbe, face], mode: .standard, blockFaces: false, screen: screen)
-            check("tuning: rejections — FBE 0.85 under a 0.9 floor is stage=threshold; a benign class is not listed",
+            check("tuning: rejections — FBE 0.92 under a 0.95 floor is stage=threshold; a benign class is not listed",
                 r.count == 1 && r[0].index == 0 && r[0].stage == "threshold", "\(r)")
             let w = raised.withheld([fbe, face], mode: .standard, blockFaces: false, screen: screen, baseline: d)
             check("tuning: withheld — the raised floor withholds the box the defaults block",
@@ -37,18 +39,24 @@ extension UISelfTest {
                     .contains { $0.index == 0 && $0.stage == "coveredBeatsExposed" })
             var floored = d
             floored.standard["FEMALE_BREAST_EXPOSED"]?.minBoxPt = 100
-            let m = floored.withheld([det("FEMALE_BREAST_EXPOSED", 0.85, small)], mode: .standard,
+            let m = floored.withheld([det("FEMALE_BREAST_EXPOSED", 0.92, small)], mode: .standard,
                                      blockFaces: false, screen: screen, baseline: d)
             check("tuning: withheld — a size floor the defaults lack is stage=minBox",
                 m.count == 1 && m[0].stage == "minBox", "\(m)")
             check("tuning: withheld — a box below the DEFAULT floor is not withheld (defaults reject it too)",
-                raised.withheld([det("FEMALE_BREAST_EXPOSED", 0.45, big)], mode: .standard,
+                raised.withheld([det("FEMALE_BREAST_EXPOSED", 0.89, big)], mode: .standard,
                                 blockFaces: false, screen: screen, baseline: d).isEmpty)
         }
 
-        // --- 1. defaults == the pre-2026-09-10 constants ---
-        check("tuning: defaults — explicit classes at 0.5, INJECT_TEST at 0, covered at 0.6",
-            TuningPolicy.exposedLabels.allSatisfy { d.standard[$0]?.threshold == 0.5 }
+        // --- 1. defaults: the receipted constants (explicit floors per class
+        // since 2026-10-20, receipt at `TuningPolicy.defaults`) ---
+        let shippedFloors: [String: Float] = [
+            "FEMALE_BREAST_EXPOSED": 0.9, "FEMALE_GENITALIA_EXPOSED": 0.7,
+            "MALE_GENITALIA_EXPOSED": 0.9, "BUTTOCKS_EXPOSED": 0.8, "ANUS_EXPOSED": 0.7,
+        ]
+        check("tuning: defaults — FBE 0.90, FGE 0.70, MGE 0.90, BE 0.80, AE 0.70, INJECT_TEST at 0, covered at 0.6",
+            TuningPolicy.exposedLabels.allSatisfy { d.standard[$0]?.threshold == shippedFloors[$0] }
+                && shippedFloors.count == TuningPolicy.exposedLabels.count
                 && d.standard["INJECT_TEST"]?.threshold == 0
                 && TuningPolicy.coveredLabels.allSatisfy { d.strict[$0]?.threshold == 0.6 }
                 && d.standard.count == 6 && d.strict.count == 3)
@@ -57,6 +65,15 @@ extension UISelfTest {
             d.standard.values.allSatisfy { $0.minBoxFraction == 0 && $0.minBoxPt == 0 && $0.entryFrames == 2 }
                 && d.strict.values.allSatisfy { $0.minBoxFraction == 0 && $0.minBoxPt == 0 && $0.entryFrames == 2 }
                 && d.coveredBeatsExposed && d.coveredOverlap == 0.9)
+        // Kept on through the 2026-10-20 floor change (owner decision): an
+        // exposed box ABOVE its new floor, inside a covered box of the same
+        // part, is still demoted and so does not block under standard.
+        let demotedAtNewFloor = d.filter(
+            [det("FEMALE_BREAST_EXPOSED", 0.95, small), det("FEMALE_BREAST_COVERED", 0.7, big)],
+            mode: .standard, blockFaces: false, screen: .zero)
+        check("tuning: defaults — covered-beats-exposed still demotes an FBE 0.95 box (above its 0.90 floor) inside FBC",
+            demotedAtNewFloor.blocked.isEmpty && demotedAtNewFloor.demoted == 1,
+            "blocked=\(demotedAtNewFloor.blocked.count) demoted=\(demotedAtNewFloor.demoted)")
         check("tuning: defaults — curtain 3 hits / 1.0 s, handoff 2, parole 2, hold 5.0 s / 20 clean frames",
             d.curtain == TuningPolicy.CurtainRules(
                 triggerHits: 3, windowSecs: 1.0, handoffHits: 2, paroleHits: 2, holdSecs: 5.0, holdCleanFrames: 20))
@@ -67,9 +84,14 @@ extension UISelfTest {
             Curtain.triggerHits == 3 && Curtain.windowSecs == 1.0 && Curtain.handoffHits == 2
                 && Curtain.paroleHits == 2 && Curtain.holdSecs == 5.0 && Curtain.holdCleanFrames == 20
                 && Tracker.defaultClearAfter(fps: 30) == 12 && Tracker.defaultStickyHold(fps: 30) == 30)
-        check("tuning: blocks() is the old Policy.blocks — standard ignores covered, strict takes it at 0.6, faces only with the flag",
-            d.blocks(det("FEMALE_BREAST_EXPOSED", 0.5, big), mode: .standard, blockFaces: false)
-                && !d.blocks(det("FEMALE_BREAST_EXPOSED", 0.49, big), mode: .standard, blockFaces: false)
+        // Every shipped floor is inclusive: the floor itself blocks, 0.01
+        // under it does not.
+        check("tuning: blocks() is the old Policy.blocks — each explicit floor inclusive, standard ignores covered, strict takes it at 0.6, faces only with the flag",
+            shippedFloors.allSatisfy { label, t in
+                d.blocks(det(label, t, big), mode: .standard, blockFaces: false)
+                    && !d.blocks(det(label, t - 0.01, big), mode: .standard, blockFaces: false)
+            }
+                && !d.blocks(det("FEMALE_BREAST_EXPOSED", 0.5, big), mode: .standard, blockFaces: false)
                 && !d.blocks(det("BUTTOCKS_COVERED", 0.9, big), mode: .standard, blockFaces: false)
                 && d.blocks(det("BUTTOCKS_COVERED", 0.6, big), mode: .strict, blockFaces: false)
                 && !d.blocks(det("BUTTOCKS_COVERED", 0.59, big), mode: .strict, blockFaces: false)
@@ -153,7 +175,7 @@ extension UISelfTest {
                 "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].minPt\" must be a number in 1.0...2000.0"),
             (stepCfg([["minPt": 2001, "threshold": 0.9]]),
                 "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].minPt\" must be a number in 1.0...2000.0"),
-            (stepCfg([["minPt": 64, "threshold": 0.9], ["minPt": 32, "threshold": 0.8]]),
+            (stepCfg([["minPt": 64, "threshold": 0.95], ["minPt": 32, "threshold": 0.97]]),
                 "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[1].minPt\" 32 must be greater than [0].minPt 64 (steps must be in increasing order)"),
             (stepCfg([["minPt": 64, "threshold": 1.5]]),
                 "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].threshold\" must be a number in 0.0...1.0"),
@@ -161,10 +183,10 @@ extension UISelfTest {
                 "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].threshold\" must be a number"),
             (stepCfg([["minPt": 64]]), "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].threshold\" is required"),
             (stepCfg([["threshold": 0.9]]), "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].minPt\" is required"),
-            // Below the class's flat threshold (0.5 here): the flat floor is applied first, so the
+            // Below the class's flat threshold (0.90 here): the flat floor is applied first, so the
             // step could never fire — refused by name, never accepted as a no-op.
-            (stepCfg([["minPt": 64, "threshold": 0.4]]),
-                "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].threshold\" 0.40 is below the class threshold 0.50"),
+            (stepCfg([["minPt": 64, "threshold": 0.8]]),
+                "\"classes.FEMALE_BREAST_EXPOSED.thresholdSteps[0].threshold\" 0.80 is below the class threshold 0.90"),
         ]
         for (obj, why) in bad {
             switch TuningPolicy.parse(obj, base: d) {
@@ -243,7 +265,10 @@ extension UISelfTest {
             mode: .standard, blockFaces: false, screen: stepScreen)
         check("tuning-steps: a box EXACTLY at minPt takes the higher bracket (64.0 pt, 0.85 < 0.90 drops)",
             f.blocked.isEmpty && f.stepDropped == 1 && f.stepEmptiedFrame)
+        // Bracket lookup, not the shipped floor: an explicit 0.7 base so both
+        // steps sit above it (`validateSteps`), as they did over the old 0.5.
         var two = d
+        two.standard["FEMALE_BREAST_EXPOSED"]!.threshold = 0.7
         two.standard["FEMALE_BREAST_EXPOSED"]!.thresholdSteps = [step(48, 0.8), step(96, 0.9)]
         let fifty = two.filter([det("FEMALE_BREAST_EXPOSED", 0.85, sideBox(50))],
             mode: .standard, blockFaces: false, screen: stepScreen)
@@ -404,6 +429,31 @@ extension UISelfTest {
         }
         check("tuning: clearAfterSecs 1.0 holds a region through 28 clean frames; the default drops it at 12",
             survives(slow, clean: 28) && !survives(d, clean: 12) && survives(d, clean: 10))
+        // stickyConf invariant (restated 2026-10-20, decision at
+        // `TrackerRules.stickyConf`): no shipped floor sits below it, so a
+        // region born from any box the defaults block gets the sticky hold;
+        // a region under it still clears at clearAfter. Fed through the real
+        // policy filter, so the region is exactly what the pipeline would birth.
+        check("tuning: stickyConf — every shipped block floor is at or above stickyConf 0.6",
+            TuningPolicy.exposedLabels.allSatisfy { d.standard[$0]!.threshold >= d.tracker.stickyConf }
+                && TuningPolicy.coveredLabels.allSatisfy { d.strict[$0]!.threshold >= d.tracker.stickyConf })
+        func holdsThrough(_ box: Detection, mode: PolicyMode, faces: Bool, clean: Int) -> Bool? {
+            let blocked = d.filter([box], mode: mode, blockFaces: faces, screen: .zero).blocked
+            guard blocked.count == 1 else { return nil }  // the policy must block it for the test to mean anything
+            let tr = Tracker(clearAfter: 12, stickyHold: 30)
+            tr.setTuning(d, fps: 30)
+            _ = tr.update(detections: blocked)
+            for _ in 0..<clean { _ = tr.update(detections: []) }
+            return !tr.update(detections: []).isEmpty
+        }
+        let lowest: [(Detection, PolicyMode)] = TuningPolicy.exposedLabels.map { (det($0, d.standard[$0]!.threshold, big), .standard) }
+            + TuningPolicy.coveredLabels.map { (det($0, d.strict[$0]!.threshold, big), .strict) }
+        let sticky = lowest.map { holdsThrough($0.0, mode: $0.1, faces: false, clean: 28) }
+        check("tuning: stickyConf — a region born AT each shipped floor holds the sticky 1.0 s (28 clean frames at 30 fps)",
+            sticky.allSatisfy { $0 == true }, "\(sticky)")
+        let face = holdsThrough(det("FACE_FEMALE", 0.3, big), mode: .standard, faces: true, clean: 12)
+        check("tuning: stickyConf — a blocked region whose peak is under it (--block-faces 0.30) still clears at clearAfter (12)",
+            face == false, "\(String(describing: face))")
         var perClass = d
         perClass.standard["FEMALE_BREAST_EXPOSED"]!.entryFrames = 3
         let ct = Tracker(clearAfter: 12, stickyHold: 30)

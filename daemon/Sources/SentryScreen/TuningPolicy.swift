@@ -42,7 +42,8 @@ struct TuningPolicy: Equatable {
     /// One detection class.
     struct ClassRule: Equatable {
         /// Block floor on the model's RAW obj·cls score (receipt at
-        /// `TuningPolicy.defaults`: 0.5 explicit, 0.6 covered).
+        /// `TuningPolicy.defaults`: explicit 0.7–0.9 per class since
+        /// 2026-10-20, covered 0.6).
         var threshold: Float
         /// One step of the staircase: from `minPt` UP (shorter side in screen
         /// points, inclusive) the block floor is this `threshold` instead of
@@ -210,8 +211,43 @@ struct TuningPolicy: Equatable {
         /// (= 1.0 s at 20 fps) took cover drops 7/1109 and 134/1256 to 0.
         var stickyHoldSecs = 1.0
         /// A region whose peak RAW confidence reached this holds
-        /// `stickyHold` frames of misses instead of `clearAfter`. Above every
-        /// block threshold (receipt at the former `Tracker.stickyConf`).
+        /// `stickyHold` frames of misses instead of `clearAfter`.
+        ///
+        /// THE INVARIANT, restated 2026-10-20 (value unchanged, 0.6). Until
+        /// then this said "above every block threshold" (it sat at or above
+        /// the 0.5 explicit and 0.6 covered floors), so a region needed a
+        /// score above its blocking floor to earn the long hold, and an
+        /// explicit region that only ever scored 0.5–0.6 cleared after
+        /// `clearAfter`. The 2026-10-20 explicit floors (0.7–0.9) are above
+        /// 0.6, so that is no longer true. What the tracker actually
+        /// guarantees, and what it is FOR (`Tracker.holdFrames`): a region
+        /// BELOW stickyConf never gets the sticky hold; a region at or above
+        /// it does. The fail-safe direction is "covers linger".
+        ///
+        /// DECISION: keep 0.6 and keep the comparison as it is; do NOT make it
+        /// per-class `max(stickyConf, threshold)`. Reasons:
+        ///  1. No tracker timing changes for any box that blocks under both
+        ///     the old and the new floors. Regions are born only from boxes
+        ///     the policy blocked (`Pipeline.step` feeds `filtered.blocked`),
+        ///     so at the new defaults every explicit region peaks at ≥ 0.7
+        ///     and gets the sticky hold, exactly as every such box (≥ 0.6)
+        ///     did before. The boxes that used to get the short hold
+        ///     (explicit 0.5–0.6) no longer block at all.
+        ///  2. `max(stickyConf, threshold)` would be a no-op: a region is
+        ///     born at or above its class floor, so it always clears
+        ///     max(0.6, floor) whenever floor ≥ 0.6. It would also need a
+        ///     label on `TrackedRegion`, which has none on purpose
+        ///     (`Tracker.mergeDetections` unions boxes across labels).
+        ///  3. Raising stickyConf to ≥ 0.9 to restore "above every floor"
+        ///     would shorten the hold of every covered (0.6) region and of
+        ///     every FGE/AE (0.7) and BE (0.8) region, from `stickyHold`
+        ///     to `clearAfter`: a tracker retune in the unsafe direction.
+        /// So: stickyConf ≤ every shipped floor means every region of a
+        /// shipped class gets the sticky hold. `--ui-selftest` "tuning:
+        /// stickyConf …" asserts both halves (no shipped floor below it; a
+        /// region under it still clears at `clearAfter`, via a
+        /// `--block-faces` 0.25-floor box). Receipt for the value at the
+        /// former `Tracker.stickyConf` (git history).
         var stickyConf: Float = 0.6
         /// IoU at which a new box matches an existing region (SPEC §5.4) and
         /// at which overlapping detections merge (`Tracker.mergeDetections`).
@@ -300,12 +336,18 @@ struct TuningPolicy: Equatable {
     /// `Pipeline.settleShiftPx`.
     /// Default off (owner 2026-09-25): no production behaviour change; enable via tuning after owner review.
     var settleRecheck = false
-    /// TUNING TOOL — the zoom (tiling) prototype (`ZoomTiles`): one 2 × 2
-    /// tile per frame in rotation on top of the full-frame pass. Off by
-    /// default (owner 2026-10-07: a Developer-tab prototype). A production
-    /// build has no field and its parser refuses the key by name, so neither
-    /// config.json nor tuning.json can turn it on there (`--ui-selftest`
-    /// group `zoom`).
+    /// The zoom (tiling) pass (`ZoomTiles`): one 2 × 2 tile per evaluated
+    /// frame in rotation on top of the full-frame pass. ON in `defaults`
+    /// since 2026-10-20 (owner decision; it was an off-by-default
+    /// Developer-tab prototype from 2026-10-07). The memberwise default
+    /// stays `false` so a hand-built policy opts in explicitly; `defaults`
+    /// sets it. RECEIPT, and its limit: the evidence is OFFLINE only —
+    /// explicit boxes found 107 → 162 on captures (receipt at `ZoomTiles`)
+    /// and the detect call MEASURED at 1.59–1.67× the full-frame-only cost
+    /// at p50 (`ZoomTiles.next`). UNMEASURED on live screens: neither the
+    /// recall gain nor the CPU cost has a live receipt yet. Frames the idle
+    /// gate skips never reach `Pipeline.step`, so they run no tile pass;
+    /// every frame that IS evaluated pays it (`--ui-selftest` group `zoom`).
     var zoomTiles = false
     var curtain = CurtainRules()
     var tracker = TrackerRules()
@@ -333,26 +375,47 @@ struct TuningPolicy: Equatable {
         "FACE_FEMALE": 0.25, "FACE_MALE": 0.25,
     ]
 
-    /// THE DEFAULTS — every value equals the constant it replaced (asserted
-    /// by `--ui-selftest` "tuning: defaults" and, end to end, by the
-    /// synthetic gate's byte-compare).
+    /// THE DEFAULTS (asserted by `--ui-selftest` "tuning: defaults").
     ///
-    /// 0.5 for the explicit classes is SPEC §5.2's requirement and the floor
-    /// the distill parity gate holds explicit classes at (`classes.CONF_FLOOR`);
-    /// live on the raw score since 2026-09-02.
-    /// 0.6 for the covered classes: RAW-SCORE RECEIPT:
+    /// EXPLICIT FLOORS, per class since 2026-10-20 (owner decision; before,
+    /// every explicit class was 0.5, SPEC §5.2's minimum and the distill
+    /// parity gate's `classes.CONF_FLOOR`, live on the raw score since
+    /// 2026-09-02):
+    ///   FEMALE_BREAST_EXPOSED 0.90, FEMALE_GENITALIA_EXPOSED 0.70,
+    ///   MALE_GENITALIA_EXPOSED 0.90, BUTTOCKS_EXPOSED 0.80, ANUS_EXPOSED 0.70.
+    /// SOURCE: the owner's live run on swimsuit-level video, 2026-10-20 —
+    /// the 0.5 floors curtained swimsuit content; these are the floors the
+    /// owner chose against that run. They are an owner decision, not a
+    /// sweep optimum. KNOWN COST (MEASURED, the score-vs-size table at
+    /// `ClassRule.thresholdSteps`): the model's score tracks box size, so a
+    /// flat floor this high loses true boxes, small ones first — in the
+    /// composite set, 16–32 pt boxes NEVER scored ≥ 0.9 (0.0 %), 32–48 pt
+    /// boxes 1.0 %, 48–64 pt 17.7 %. A small or partial true
+    /// FEMALE_BREAST_EXPOSED / MALE_GENITALIA_EXPOSED box is therefore now
+    /// expected to go uncovered. SPEC §5.2's 0.5 is a minimum, which these
+    /// stay above. `tracker.stickyConf` 0.6 is now BELOW the explicit
+    /// floors: consequence and decision at `TrackerRules.stickyConf`.
+    /// 0.6 for the covered classes (unchanged): RAW-SCORE RECEIPT:
     /// covered floor 0.4 / 0.5 / 0.6 / 0.7 →
     /// owner covered captures tp/fp 38/26 · 28/20 · 25/12 · 18/7, clean-screen
     /// FP 2 · 0 · 0 · 0 /250. 0.6 is the lowest floor with better than 2 tp
     /// per fp; covered recall there is .116 — the thumbnail regime the
     /// covered data round targets, not something this floor can buy back.
+    static let defaultExposedThresholds: [String: Float] = [
+        "FEMALE_BREAST_EXPOSED": 0.9, "FEMALE_GENITALIA_EXPOSED": 0.7,
+        "MALE_GENITALIA_EXPOSED": 0.9, "BUTTOCKS_EXPOSED": 0.8, "ANUS_EXPOSED": 0.7,
+    ]
     static let defaults: TuningPolicy = {
         var standard: [String: ClassRule] = [:]
-        for label in exposedLabels { standard[label] = ClassRule(threshold: 0.5) }
+        // `!`: a label missing from the table must stop the build's self-test
+        // run, not ship at a floor nobody chose.
+        for label in exposedLabels { standard[label] = ClassRule(threshold: defaultExposedThresholds[label]!) }
         standard[injectLabel] = ClassRule(threshold: 0.0)
         var strict: [String: ClassRule] = [:]
         for label in coveredLabels { strict[label] = ClassRule(threshold: 0.6) }
-        return TuningPolicy(standard: standard, strict: strict)
+        var p = TuningPolicy(standard: standard, strict: strict)
+        p.zoomTiles = true  // receipt at `zoomTiles`
+        return p
     }()
 
     // MARK: Decisions
@@ -723,10 +786,13 @@ struct TuningPolicy: Equatable {
                 "stickyConf": f(Double(tracker.stickyConf)), "matchIoU": f(tracker.matchIoU),
             ],
         ]
-        // THE DUMP RULE again (see `thresholdSteps`): emitted only when on,
-        // so the defaults dump stays byte-identical and a tuning.json at the
-        // default is still accepted by an older binary.
-        if zoomTiles { out["zoomTiles"] = true }
+        // ALWAYS emitted since 2026-10-20, when `defaults` turned it on.
+        // Until then this followed THE DUMP RULE (emitted only when on);
+        // with an ON default that rule would write an OFF policy without the
+        // key, and the file would load back ON (`parse` layers over
+        // `defaults`): the Developer tab's off switch would not survive a
+        // save. Every released public build (0.4.0 on) accepts the key.
+        out["zoomTiles"] = zoomTiles
         return out
     }
 
@@ -753,9 +819,12 @@ struct TuningPolicy: Equatable {
     /// threshold of 5, a hold of 5000) fails at load instead of shipping:
     ///  - threshold, stickyConf, coveredOverlap: scores, 0…1 (overlap ≥ 0.5,
     ///    receipt at `coveredOverlap`);
-    ///  - keepGap 0…0.25: at 0.25 the explicit classes' keep floor (0.5 −
-    ///    0.25) reaches the detector floor `--conf` 0.25, below which no box
-    ///    ever arrives, so a larger gap could not keep anything more;
+    ///  - keepGap 0…0.25: at 0.25 the 0.5 explicit floors of 2026-09-25
+    ///    (when the gap was added) had a keep floor (0.5 − 0.25) at the
+    ///    detector floor `--conf` 0.25, below which no box ever arrives.
+    ///    Since the 2026-10-20 floors (0.7–0.9) that is no longer the bound
+    ///    a larger gap hits; the range is kept as a tripwire (a gap past a
+    ///    quarter of the score scale is a typo, not a tuning);
     ///  - thresholdSteps: at most `ClassRule.maxSteps` = 4 entries (receipt
     ///    at the field: 2 boundaries meet the measured need, 4 is 2x it), each
     ///    `{minPt, threshold}` and nothing else, `minPt` STRICTLY INCREASING —

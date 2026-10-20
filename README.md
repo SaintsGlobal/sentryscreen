@@ -219,7 +219,8 @@ Every build includes the tuning tools:
 - **Settings › Developer:** per-class thresholds, size floors (`thresholdSteps`),
   curtain hit counts and hold times, with a live "Last 60 s" readout of hits and
   of which rule removed a box. Changes are written to `parent/tuning.json` behind
-  the parent PIN and apply within a second.
+  the parent PIN and apply within a second. **Reset to shipped defaults** returns
+  to the floors below.
 - **Detection view:** outlines of what the model sees, over or instead of the
   covers, for a few minutes at a time, including weak detections below the
   blocking threshold.
@@ -227,6 +228,13 @@ Every build includes the tuning tools:
   out-of-range value is refused by name. `sentry-screen --print-tuning` prints the
   policy in force. The fields and their meaning are documented on
   `TuningPolicy` in `daemon/Sources/SentryScreen/TuningPolicy.swift`.
+
+Shipped defaults: female breast exposed 0.90, female genitalia exposed 0.70, male
+genitalia exposed 0.90, buttocks exposed 0.80, anus exposed 0.70 (on the model's
+0–1 score); covered classes 0.60 under the strict policy; an exposed box mostly
+inside a covered box of the same part counts as covered (`coveredBeatsExposed`,
+overlap 0.90); and `zoomTiles` on. The high floors cut false alarms on swimwear at
+the cost of missing small or partial content, which the model scores lower.
 
 <details>
 <summary>Running from Terminal (development)</summary>

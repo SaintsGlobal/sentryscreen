@@ -127,6 +127,13 @@ extension UISelfTest {
         model.reset()
         check("devtab: reset removes the file, draft = launch policy, stamp = none",
             !fm.fileExists(atPath: path) && model.draft == base && model.applied == .none(source: "defaults") && model.writeError == nil)
+        check("devtab: Reset to shipped defaults lands on the 2026-10-20 floors and zoomTiles on",
+            model.draft.rule(for: "FEMALE_BREAST_EXPOSED")?.threshold == 0.9
+                && model.draft.rule(for: "FEMALE_GENITALIA_EXPOSED")?.threshold == 0.7
+                && model.draft.rule(for: "MALE_GENITALIA_EXPOSED")?.threshold == 0.9
+                && model.draft.rule(for: "BUTTOCKS_EXPOSED")?.threshold == 0.8
+                && model.draft.rule(for: "ANUS_EXPOSED")?.threshold == 0.7
+                && model.draft.coveredBeatsExposed && model.draft.coveredOverlap == 0.9 && model.draft.zoomTiles)
         model.reset()
         check("devtab: reset with no file is not an error", model.writeError == nil)
         model.noteOutcome(.absent)
@@ -178,9 +185,11 @@ extension UISelfTest {
         policy.standard["MALE_GENITALIA_EXPOSED"]?.minBoxPt = 24
         policy.coveredBeatsExposed = true
         let screen = CGSize(width: 1920, height: 1080)
-        let small = Detection(label: "MALE_GENITALIA_EXPOSED", confidence: 0.62, box: CGRect(x: 0.4, y: 0.5, width: 0.01, height: 0.03))
+        // Scores sit above the shipped floors (2026-10-20: MGE 0.90, BE 0.80,
+        // FBE 0.90) so each box reaches the rule the case is about.
+        let small = Detection(label: "MALE_GENITALIA_EXPOSED", confidence: 0.93, box: CGRect(x: 0.4, y: 0.5, width: 0.01, height: 0.03))
         let big = Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.84, box: CGRect(x: 0.5, y: 0.4, width: 0.2, height: 0.3))
-        let exposed = Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.71, box: CGRect(x: 0.30, y: 0.30, width: 0.05, height: 0.08))
+        let exposed = Detection(label: "FEMALE_BREAST_EXPOSED", confidence: 0.93, box: CGRect(x: 0.30, y: 0.30, width: 0.05, height: 0.08))
         let covered = Detection(label: "FEMALE_BREAST_COVERED", confidence: 0.66, box: CGRect(x: 0.28, y: 0.28, width: 0.12, height: 0.16))
         let inject = Detection(label: TuningPolicy.injectLabel, confidence: 1, box: CGRect(x: 0, y: 0, width: 0.5, height: 0.5))
         let face = Detection(label: "FACE_FEMALE", confidence: 0.9, box: CGRect(x: 0, y: 0, width: 0.1, height: 0.1))
@@ -196,7 +205,7 @@ extension UISelfTest {
         }
         feed([big, exposed, covered, inject, face, small], blockFaces: true, at: now - 5)
         feed([big], at: now - 2)
-        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.55, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))], at: now - 1)
+        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.82, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))], at: now - 1)
         // Outside the window: must not count.
         feed([big, small], at: now - 61)
         readout.recordCurtain(action: "lift (hold)", windowID: 7, app: "Safari", now: now - 70)
@@ -286,15 +295,15 @@ extension UISelfTest {
         let a = stepReadout.snapshot(now: now)
         check("devtab: the readout names the step that cut a box — side, floor, the step's boundary and the base it replaced",
             a.lastSuppression?.rule == .thresholdStep
-                && a.lastSuppression?.detail == "BUTTOCKS_EXPOSED 324 pt conf 0.84 < 0.90 (step ≥ 128 pt; base 0.50)"
+                && a.lastSuppression?.detail == "BUTTOCKS_EXPOSED 324 pt conf 0.84 < 0.90 (step ≥ 128 pt; base 0.80)"
                 && a.stepBoxesCut == 1 && a.stepFramesEmptied == 0 && a.blockedFrames == 1,
             "\(String(describing: a.lastSuppression)) cut=\(a.stepBoxesCut) emptied=\(a.stepFramesEmptied) blocked=\(a.blockedFrames)")
         // Frame B: the same box alone ⇒ the frame is EMPTIED (the only
         // outcome that can move a curtain drop).
         feed([big], stepReadout, policy: stepPolicy, at: now + 1)
         // Frame C: a 108-pt BUTTOCKS box is BELOW the boundary, so the base
-        // 0.50 applies and 0.55 still blocks — no cut.
-        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.55, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))],
+        // 0.80 applies and 0.82 still blocks — no cut.
+        feed([Detection(label: "BUTTOCKS_EXPOSED", confidence: 0.82, box: CGRect(x: 0.5, y: 0.4, width: 0.1, height: 0.1))],
             stepReadout, policy: stepPolicy, at: now + 2)
         // Frame D: the 19.2-pt MALE box is removed by minBoxPt 24. It is over
         // the 16-pt step and under its 0.95 floor, so ONLY the ordering keeps
@@ -339,7 +348,7 @@ extension UISelfTest {
         p.curtain.windowSecs = 2.5
         check("devtab: UIDeveloperSettingsSection.current maps every slider id to its draft field",
             UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.minBoxPt", in: p) == 12
-                && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.threshold", in: p) == 0.5
+                && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.threshold", in: p) == Double(Float(0.7))
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.ANUS_EXPOSED.entryFrames", in: p) == 2
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.coveredOverlap", in: p) == base.coveredOverlap
                 && UIDeveloperSettingsSection.current(id: "ui.settings.developer.curtain.triggerHits", in: p) == 3

@@ -190,7 +190,11 @@ final class Tracker {
     // region "confident", so every region got the sticky hold; now only a
     // region whose peak raw score reached 0.6 does — the fail-safe direction
     // is unchanged (a region below it still holds clearAfter).
-    private var stickyConf: Float { tuning.tracker.stickyConf }  // above every block threshold
+    // Since 2026-10-20 it is NOT above every block threshold: the explicit
+    // floors (0.7–0.9) are above it, so every explicit region gets the
+    // sticky hold. Why that keeps the intended behavior, and why it is not
+    // per-class max(stickyConf, floor): `TuningPolicy.TrackerRules.stickyConf`.
+    private var stickyConf: Float { tuning.tracker.stickyConf }
 
     // A media-held region uses the media hold INSTEAD of sticky/clearAfter
     // (--media-hold, receipt at Options.mediaHoldSecs): the whole point is to

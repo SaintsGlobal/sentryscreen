@@ -1,9 +1,9 @@
 import CoreGraphics
 import Foundation
 
-/// TUNING TOOL — the zoom (tiling) prototype, behind the Developer tab's
-/// `zoomTiles` toggle (tuning.json `"zoomTiles": true`, off by default; a
-/// production build has no field, no parser key and none of this file).
+/// The zoom (tiling) pass, behind the `zoomTiles` tuning key and the
+/// Developer tab's toggle. ON by default since 2026-10-20 (owner decision;
+/// receipt and its limits at `TuningPolicy.zoomTiles`).
 ///
 /// The detector sees the whole capture `.scaleFill`-ed to 640 × 640, so
 /// small content on a 1280 × 720 frame gets few model pixels. With the
