@@ -635,7 +635,6 @@ struct UIPopoverView: View {
             // around it, not rows that can scroll away.
             case .settings:
                 UISettingsPanelView(state: state, actions: actions, activity: activity)
-            case .confirm(let spec): UIConfirmView(actions: actions, spec: spec)
             case .remove: UIRemoveView(actions: actions)
             case .diagnosticsReview: UIDiagnosticsReviewView(actions: actions)
             }
@@ -707,7 +706,7 @@ struct UIPopoverView: View {
         if Self.parentControlsAvailable(isAdmin: state.isAdmin) { uninstallLink }
     }
 
-    /// "Uninstall SentryScreen…" in every parent state (owner 2026-10-16), so
+    /// "Remove SentryScreen…" in every parent state (owner 2026-10-16), so
     /// a parent stuck in a bug can always remove the app. Its own last row:
     /// the 288 pt footer row has no room beside Settings… and the wordmark.
     private var uninstallLink: some View {
@@ -1402,7 +1401,9 @@ struct UIPopoverHeader: View {
     }
 
     private var fullBody: some View {
-        HStack(alignment: .center, spacing: 12) {
+        // Top, not centre: a three-line "Protection is interrupted" title
+        // left the badge floating mid-block (VM render 2026-10-20).
+        HStack(alignment: .top, spacing: 12) {
             badge
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {

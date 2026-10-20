@@ -1480,6 +1480,9 @@ final class Pipeline {
     /// rows. Filled by the curtain observers during `curtainRects`, read
     /// and cleared by the readout record right after it.
     private var readoutWindows: [Int: CGWindowID] = [:]
+    /// detectQueue: this step is in the readout's recording window
+    /// (`TuningReadout.isActive`), read once before `curtainRects`.
+    private var readoutActive = false
     private var readoutDrops: [TuningReadout.Drop] = []
     /// The readout's app names, memoized per window (same bound and rule as
     /// the Detection view's, `DetectionTraceAppNames`). detectQueue only.
@@ -2519,11 +2522,10 @@ final class Pipeline {
                 zoomRecord = FrameLogger.ZoomRecord(
                     tile: zoomTile.index, ms: (passMs * 10).rounded() / 10, cut: merged.dropped,
                     full: pass.kept.map(FrameLogger.DetectionRecord.init))
-                // The Developer tab's Tiles row, before the merge replaces
-                // `pass.kept` (the full pass's own boxes decide tile-only).
+                // The Developer tab's Tiles row, from this merge's own cut
+                // and same-box decisions.
                 zoomTilesMonitor?.record(ZoomTiles.passView(
-                    full: pass.kept, tile: pass.tile, index: zoomTile.index, region: zoomTile.region,
-                    at: CFAbsoluteTimeGetCurrent()))
+                    merged, index: zoomTile.index, region: zoomTile.region, at: CFAbsoluteTimeGetCurrent()))
                 pass.kept = merged.merged
                 logger.count("zoomTilePasses")
                 logger.sample("zoomPassMs", passMs)
@@ -2710,10 +2712,13 @@ final class Pipeline {
         // headless, so `anchors` is empty and every downstream path no-ops.
         let anchors = resolveOwnership(
             regions, painted: painted, mustCover: mustCover, at: capturedAt)
+        // Once per step, before the curtain: the readout records (and the
+        // curtain credits windows for it) only in its recording window.
+        readoutActive = tuningReadout?.isActive(now: CFAbsoluteTimeGetCurrent()) ?? false
         let curtainStart = CFAbsoluteTimeGetCurrent()
         let curtains = curtainRects(blocked, at: capturedAt)
         let curtainMs = (CFAbsoluteTimeGetCurrent() - curtainStart) * 1000
-        if let tuningReadout {
+        if let tuningReadout, readoutActive {
             tuningReadout.record(
                 raw: detections, filtered: filtered, tuning: tuning, mode: effectivePolicy,
                 blockFaces: opts.blockFaces, screen: screenSize, now: CFAbsoluteTimeGetCurrent(),
@@ -2871,7 +2876,7 @@ final class Pipeline {
         let frames = curtain.update(
             blockedScreenRects: blockedRects,
             tracker: windowTracker, display: display, at: t,
-            sourceIndices: cropWriter == nil && tuningReadout == nil ? nil : Array(blocked.indices))
+            sourceIndices: cropWriter == nil && !readoutActive ? nil : Array(blocked.indices))
         noteExposure(blocked, rects: blockedRects, covered: frames.map(\.frame), at: t)
         // Capture-time attribution fallbacks (receipt at
         // Curtain.frontCandidateSecs): named in the 60 s summary like

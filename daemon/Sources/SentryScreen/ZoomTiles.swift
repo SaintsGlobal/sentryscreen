@@ -85,18 +85,27 @@ enum ZoomTiles {
             || (tile.maxY < 1 - eps && b.maxY > 1 - edgeMargin)
     }
 
+    /// What `merge` returns: the merged list, the seam-cut count, and the
+    /// tile boxes the seam rule kept, each with whether the full pass had
+    /// no same-class box at `mergeIoU` (the Tiles row's tile-only mark).
+    struct Merge {
+        let merged: [Detection]
+        let dropped: Int
+        let tileKept: [(box: Detection, tileOnly: Bool)]
+    }
+
     /// The experiment's `arm_dets`: drop the cut tile boxes, mark the rest with
     /// `tileIndex`, then per-class greedy NMS over full + tile boxes at
     /// `mergeIoU`, highest score first (a tie keeps the full-frame box).
-    static func merge(full: [Detection], tile: [Detection], tileIndex: Int, region: CGRect)
-        -> (merged: [Detection], dropped: Int)
-    {
+    static func merge(full: [Detection], tile: [Detection], tileIndex: Int, region: CGRect) -> Merge {
         var candidates = full
         var dropped = 0
+        var kept: [(box: Detection, tileOnly: Bool)] = []
         for var d in tile {
             if isCut(d.box, tile: region) { dropped += 1; continue }
             d.tile = tileIndex
             candidates.append(d)
+            kept.append((d, !full.contains { sameBox($0, d) }))
         }
         let order = candidates.indices.sorted {
             candidates[$0].confidence != candidates[$1].confidence
@@ -105,31 +114,35 @@ enum ZoomTiles {
         var out: [Detection] = []
         for i in order {
             let d = candidates[i]
-            if out.allSatisfy({ $0.label != d.label || Geometry.iou($0.box, d.box) < mergeIoU }) {
-                out.append(d)
-            }
+            if !out.contains(where: { sameBox($0, d) }) { out.append(d) }
         }
-        return (out, dropped)
+        return Merge(merged: out, dropped: dropped, tileKept: kept)
+    }
+
+    /// Two boxes are one box: same class, IoU ≥ `mergeIoU`. The one rule
+    /// both the NMS and the tile-only mark use.
+    static func sameBox(_ a: Detection, _ b: Detection) -> Bool {
+        a.label == b.label && Geometry.iou(a.box, b.box) >= mergeIoU
     }
 
     /// What the Developer tab's Tiles row draws for one tile pass
-    /// (`ZoomTilesMonitor`): every tile box the seam rule kept, in frame
-    /// coordinates (top-left, the way the row draws), each marked
-    /// `tileOnly` when the full-frame pass has no same-class box at
-    /// `mergeIoU` — the boxes the zoom found and the full pass missed, by the
-    /// same rule `merge` uses to call two boxes one. Labels and numbers only.
+    /// (`ZoomTilesMonitor`), from the pass's own `merge`: every tile box the
+    /// seam rule kept, in frame coordinates (top-left, the way the row
+    /// draws), with its tile-only mark. Labels and numbers only.
+    static func passView(_ m: Merge, index: Int, region: CGRect, at: CFAbsoluteTime) -> ZoomTilePass {
+        func topLeft(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height) }
+        let boxes = m.tileKept.map {
+            ZoomTilePass.Box(label: $0.box.label, confidence: $0.box.confidence, rect: topLeft($0.box.box),
+                tileOnly: $0.tileOnly)
+        }
+        return ZoomTilePass(index: index, region: topLeft(region), boxes: boxes, cut: m.dropped, at: at)
+    }
+
+    /// `passView` from raw boxes (the self-tests): runs `merge` first.
     static func passView(
         full: [Detection], tile: [Detection], index: Int, region: CGRect, at: CFAbsoluteTime
     ) -> ZoomTilePass {
-        func topLeft(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height) }
-        var cut = 0
-        var boxes: [ZoomTilePass.Box] = []
-        for d in tile {
-            if isCut(d.box, tile: region) { cut += 1; continue }
-            let seen = full.contains { $0.label == d.label && Geometry.iou($0.box, d.box) >= mergeIoU }
-            boxes.append(.init(label: d.label, confidence: d.confidence, rect: topLeft(d.box), tileOnly: !seen))
-        }
-        return ZoomTilePass(index: index, region: topLeft(region), boxes: boxes, cut: cut, at: at)
+        passView(merge(full: full, tile: tile, tileIndex: index, region: region), index: index, region: region, at: at)
     }
 
     /// The row's short class codes (FBE, FGE, MGE, BE, AE; the covered

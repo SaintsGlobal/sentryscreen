@@ -315,9 +315,11 @@ enum UninstallCopy {
     static let row = "Remove SentryScreen…"
     /// Popover footer and Setup window link: there in every state, so a
     /// parent stuck in a bug can always remove the app (owner 2026-10-16).
-    static let anywhereLabel = "Uninstall SentryScreen…"
-    static let anywhereTitle = "Uninstall SentryScreen"
-    static let pinConfirmation = "Enter the parent PIN to uninstall SentryScreen."
+    /// "Remove", as the Settings row and every card after it say (it read
+    /// "Uninstall" here alone until 2026-10-20: one action, two names).
+    static let anywhereLabel = row
+    static let anywhereTitle = "Remove SentryScreen"
+    static let pinConfirmation = "Enter the parent PIN to remove SentryScreen."
 
     // MARK: Confirm card (board Uninstall-Popover, 2026-09 redesign)
     //

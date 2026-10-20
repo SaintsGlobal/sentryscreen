@@ -346,6 +346,31 @@ final class TuningReadout {
     }
 
     private let lock = NSLock()
+
+    /// RECORDING WINDOW: the readout records only while the Developer tab is
+    /// open and for this long after it closes (code review 2026-10-20: it
+    /// re-ran the policy per box and asked the curtain for per-frame window
+    /// credit on every Mac, for a tab almost nobody opens). 600 s, ASSUMED:
+    /// long enough to close Settings, play the content being tuned, and come
+    /// back to read it; ten times the readout's own 60 s window.
+    static let activeTailSecs: Double = 600
+    private var activeUntil = -Double.infinity
+
+    /// Main, from the tab's 1 Hz tick while it is on screen.
+    func keepActive(now: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeUntil = now + Self.activeTailSecs
+    }
+
+    /// detectQueue, per frame: whether to record (and so whether the
+    /// pipeline asks the curtain for window credit at all).
+    func isActive(now: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return now < activeUntil
+    }
+
     /// `trackCapacity` and attribution-mismatch reports, edge-triggered (one
     /// line per episode), called outside the lock. The pipeline wires it to
     /// the run log (`"event":"tuning-readout"`); unwired in tests and the demo.
@@ -955,6 +980,7 @@ final class UIDevTuning: ObservableObject {
         var s = readout.snapshot(now: now)
         if frozenAt != nil { s.rows = snapshot.rows }
         if s != snapshot { snapshot = s }
+        if devTabVisible { readout.keepActive(now: now) }
         // While frozen the rows are pinned, so a quiet screen publishes
         // nothing; this keeps "live in N s" counting down.
         let remaining = freezeRemaining(now: now)
@@ -973,6 +999,11 @@ final class UIDevTuning: ObservableObject {
     /// `freezeRemaining` as of the last tick, published so the Freeze
     /// button's countdown redraws each second.
     @Published private(set) var freezeLeft = 0
+    /// The Developer section is on screen (its onAppear / onDisappear):
+    /// each tick then extends the readout's recording window.
+    var devTabVisible = false {
+        didSet { if devTabVisible { readout.keepActive(now: CFAbsoluteTimeGetCurrent()) } }
+    }
 
     func freeze(now: Double = CFAbsoluteTimeGetCurrent()) {
         frozenAt = now
@@ -1095,6 +1126,8 @@ struct UIDeveloperSettingsSection: View {
             UISection { readout }
         }
         .uiScrollAnchor("\(Self.idPrefix).reset")
+        .onAppear { tuning.devTabVisible = true }
+        .onDisappear { tuning.devTabVisible = false }
         // A refused steps entry opens its class, so the refusal under the
         // field is on screen; it then closes like any open class.
         .onChange(of: tuning.editError) { _, error in
@@ -1423,7 +1456,8 @@ struct UIDeveloperSettingsSection: View {
 
     // MARK: Readout
 
-    static let readoutEmptyText = "No policy-class detections in the last 60 s."
+    static let readoutEmptyText = "No policy-class detections in the last 60 s. "
+        + "Recording runs while this tab is open and for 10 min after."
 
     private var readout: some View {
         let s = tuning.snapshot

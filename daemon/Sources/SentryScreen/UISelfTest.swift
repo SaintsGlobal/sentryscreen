@@ -1948,6 +1948,12 @@ enum UISelfTest {
             "refusal=\(refusal ?? "none")")
         check("settings lock: the refusal is bounded by the budget, not by the holder",
             waited >= 1 && waited < 3, String(format: "waited %.2f s", waited))
+        check("settings: with no PIN the footer says a change asks you to set one; with one, for your PIN",
+            UISettingsPanelView.pinNote(pinSet: false) == "Changes ask you to set a PIN"
+                && UISettingsPanelView.pinNote(pinSet: true) == "Changes ask for your PIN"
+                && UISettingsPanelView.setPinLabel == "Set a PIN…")
+        check("remove: the popover link and the Settings row name the action the same way",
+            UninstallCopy.anywhereLabel == UninstallCopy.row && UninstallCopy.row == "Remove SentryScreen…")
         check("settings lock: a refused write changes nothing on disk",
             FileManager.default.contents(atPath: path) == before)
         flock(held, LOCK_UN)

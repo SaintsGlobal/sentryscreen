@@ -377,6 +377,14 @@ extension UISelfTest {
         let summary = UIDeveloperSettingsSection.closedSummary(ae, base: baseAE)
         check("devtab: a closed class names its changed steps, minBoxPt and entryFrames",
             summary == "Changed: steps 64:0.90 · minBoxPt 12 · entryFrames \(ae.entryFrames)", summary ?? "nil")
+
+        // --- 8c. the readout records only in its window after the tab was seen ---
+        let win = TuningReadout()
+        let neverOpened = !win.isActive(now: 1000)
+        win.keepActive(now: 1000)
+        check("devtab: the readout records only while the tab is open and for activeTailSecs after",
+            neverOpened && win.isActive(now: 1000 + TuningReadout.activeTailSecs - 1)
+                && !win.isActive(now: 1000 + TuningReadout.activeTailSecs))
         try? fm.removeItem(atPath: dir)
     }
 

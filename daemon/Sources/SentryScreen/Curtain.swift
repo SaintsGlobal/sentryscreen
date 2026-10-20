@@ -902,13 +902,16 @@ final class Curtain {
         sourceIndices: [Int]? = nil
     ) -> [(id: CGWindowID, frame: CGRect)] {
         var source: [Int]?
-        if onDrop != nil || onAttribution != nil, !blockedScreenRects.isEmpty {
-            if let sourceIndices, sourceIndices.count == blockedScreenRects.count {
+        // nil `sourceIndices` is the caller opting out this frame (no crop
+        // writer, readout not recording); only a list that does not fit is
+        // a skip worth logging.
+        if onDrop != nil || onAttribution != nil, !blockedScreenRects.isEmpty, let sourceIndices {
+            if sourceIndices.count == blockedScreenRects.count {
                 source = sourceIndices
             } else {
                 onCropEvent?(
                     "attribution=source-index skipped=true expected=\(blockedScreenRects.count) "
-                        + "observed=\(sourceIndices?.count ?? 0)")
+                        + "observed=\(sourceIndices.count)")
             }
         }
         var attributedThisFrame: [CGWindowID: [Int]]? = source == nil ? nil : [:]

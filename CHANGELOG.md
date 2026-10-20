@@ -28,6 +28,12 @@
   the first tile pass. In Last 60 s each row's floor moved to its second line, a
   key explains the row symbols, covered classes use their own codes (FBC, FGC,
   BC), and the suppression counts fold under **Removed by rules**.
+- Settings › Developer's Last 60 s records only while the Developer tab is open
+  and for 10 minutes after it closes, so a Mac where nobody opens the tab no
+  longer does that work on every frame.
+- The popover and the Setup window now say "Remove SentryScreen…", as Settings
+  does. With no PIN set, Settings offers "Set a PIN…" (not "Change PIN…" and
+  "Forgot PIN?") and says that changes ask you to set one.
 - Window covers now say "Content blocked — click the title bar, then press ⌘W".
   Covers let clicks through, so the old "click here" sent the click to the covered
   content itself. The title bar is never covered, so clicking it only brings the

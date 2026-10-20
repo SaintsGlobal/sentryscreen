@@ -73,31 +73,6 @@ enum UIVersion {
     }
 }
 
-/// A destructive confirmation drawn over the popover's sections: the copy,
-/// the two buttons, and the ids the driver taps. Equatable and value-only so
-/// it can ride in `UIActions.Layer` (the action itself is held separately —
-/// a closure is not Equatable and SwiftUI diffs this).
-///
-/// `title` + " " + `body` is the spec's confirmation copy VERBATIM, split at
-/// the sentence the parent must answer. That split is the NSAlert idiom
-/// (messageText / informativeText) and is what `copy` reassembles for the
-/// `.note` control the E2E scripts assert against — so the copy can never
-/// drift from the spec without failing a test.
-struct UIConfirm: Equatable {
-    let title: String
-    let body: String
-    let confirmLabel: String
-    /// e.g. `ui.settings.x`: `.confirm`, `.cancel` and
-    /// `.note` hang off it (spec §10.2).
-    let idPrefix: String
-    let symbol: String
-
-    var copy: String { title + " " + body }
-    var confirmID: String { idPrefix + ".confirm" }
-    var cancelID: String { idPrefix + ".cancel" }
-    var noteID: String { idPrefix + ".note" }
-}
-
 /// The three pause presets (spec §9.2 rows; OWNER copy). Timed presets cap
 /// at 1 hr and `untilRestart` is unbounded by design (Addendum 6H).
 enum PausePreset: String, CaseIterable {
@@ -155,11 +130,11 @@ final class UIActions: ObservableObject {
     static let machineWideNote = "Pausing turns off protection for everyone on this Mac."
 
     /// Which layer is drawn over the popover's sections. `settings` is the
-    /// §9.4 panel; `confirm` is a destructive step in front of a mutation.
-    /// `remove` is the §8.1(7) removal confirmation: its own layer rather
-    /// than a `UIConfirm`, because it asks two questions (keep or delete the
-    /// settings, clear the permission record or not) before it acts.
-    enum Layer: Equatable { case none, pin, setPin, settings, confirm(UIConfirm), remove, diagnosticsReview }
+    /// §9.4 panel. `remove` is the §8.1(7) removal confirmation, which asks
+    /// two questions (keep or delete the settings, clear the permission
+    /// record or not) before it acts. The generic `confirm` layer went with
+    /// its last caller, the hide-icon confirmation (2026-10-20).
+    enum Layer: Equatable { case none, pin, setPin, settings, remove, diagnosticsReview }
 
     /// A mutation waiting for the PIN. `body` runs on success and is dropped
     /// on cancel — never run early, never queued twice.
@@ -226,9 +201,6 @@ final class UIActions: ObservableObject {
     /// started inside the settings panel. Without it, changing a setting
     /// dumps the parent back to the status screen mid-task.
     private var returnLayer: Layer = .none
-    /// The mutation a `.confirm` layer will run on Accept, dropped on Cancel
-    /// — the same never-run-early contract as `Pending`.
-    private var confirmBody: (() -> Void)?
     /// The PIN this unlock window was opened with, so Change PIN… can hand
     /// it to `PinGate.setPin(_:current:)` instead of bypassing the gate's own
     /// current-PIN check. Lives exactly as long as the unlock window and is
@@ -344,7 +316,7 @@ final class UIActions: ObservableObject {
         log("uninstall", "stage=cancelled at the confirmation — nothing was changed")
     }
 
-    /// The popover footer's "Uninstall SentryScreen…", drawn in every popover
+    /// The popover footer's "Remove SentryScreen…", drawn in every popover
     /// state (owner 2026-10-16: someone stuck in a bug, such as a permission
     /// loop, must always be able to remove the app). The parent PIN is asked
     /// first when one is set; then the same card and Uninstaller as Settings.
@@ -355,7 +327,7 @@ final class UIActions: ObservableObject {
         }
     }
 
-    /// The Setup window's "Uninstall SentryScreen…". That window has no PIN
+    /// The Setup window's "Remove SentryScreen…". That window has no PIN
     /// keypad, so a set PIN is asked for in a plain alert and checked by the
     /// same `PinGate` (same lockout). Then the Uninstaller runs with the
     /// default choice (complete removal); its admin prompt is the last step.
@@ -564,28 +536,6 @@ final class UIActions: ObservableObject {
         diagnostics?.clearSendNotice()
     }
 
-    /// Puts a destructive confirmation in front of `body`. No caller since
-    /// the hide-icon confirmation went (2026-10-20). Cancel returns to `from` with `body` dropped.
-    func confirm(_ spec: UIConfirm, from: Layer, _ body: @escaping () -> Void) {
-        writeError = nil
-        returnLayer = from
-        confirmBody = body
-        layer = .confirm(spec)
-    }
-
-    func cancelConfirm() {
-        confirmBody = nil
-        layer = returnLayer
-    }
-
-    func acceptConfirm() {
-        let run = confirmBody
-        confirmBody = nil
-        // `run` opens the PIN layer itself (every mutation is gated), so the
-        // layer is left to it rather than reset here.
-        run?()
-    }
-
     /// Popover closed, or the parent cancelled: drop the unlock window, any
     /// pending mutation, and any derivation still in flight. Cancel is a real
     /// abort, not a repaint — see `epoch`.
@@ -596,7 +546,6 @@ final class UIActions: ObservableObject {
         pending = nil
         dropped?()
         returnLayer = .none
-        confirmBody = nil
         diagnosticsDraft = nil
         diagnostics?.clearSendNotice()
         verifiedPin = nil
@@ -1294,12 +1243,13 @@ struct UISettingsPanelView: View {
                     Image(systemName: UISymbol.lock)
                         .uiFont(.caption)
                         .accessibilityHidden(true)
-                    Text(Self.pinNote)
+                    Text(Self.pinNote(pinSet: actions.store.parentPIN != nil))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .uiFont(.caption)
                 .foregroundStyle(SentryColor.muted)
-                .uiControl("ui.settings.pinnote", kind: .text, read: { Self.pinNote })
+                .uiControl("ui.settings.pinnote", kind: .text,
+                    read: { [actions] in Self.pinNote(pinSet: actions.store.parentPIN != nil) })
                 Spacer(minLength: 0)
                 // Outlined, not mustard: no page of Settings has a primary.
                 Button("Done") { actions.closeSettings() }
@@ -1345,7 +1295,11 @@ struct UISettingsPanelView: View {
         .uiControl("ui.settings.morebelow", kind: .text, read: { Self.moreBelowLabel })
     }
     /// Settings-General, verbatim.
-    static let pinNote = "Changes ask for your PIN"
+    static let pinNoteText = "Changes ask for your PIN"
+    /// With no PIN yet a change opens Set a PIN first (`requirePIN`), so
+    /// "your PIN" would name one that does not exist.
+    static let pinNoteNoPin = "Changes ask you to set a PIN"
+    static func pinNote(pinSet: Bool) -> String { pinSet ? pinNoteText : pinNoteNoPin }
 
     /// The selected page's sections — everything that scrolls.
     @ViewBuilder private var page: some View {
@@ -1415,8 +1369,11 @@ struct UISettingsPanelView: View {
                 VStack(spacing: 0) {
                     changePIN
                     rowDivider
-                    forgotPIN
-                    rowDivider
+                    // Nothing to forget before a PIN is set.
+                    if actions.store.parentPIN != nil {
+                        forgotPIN
+                        rowDivider
+                    }
                     version
                 }
                 .padding(.vertical, 4)
@@ -1492,9 +1449,13 @@ struct UISettingsPanelView: View {
 
     // MARK: Rows
 
+    /// "Set a PIN…" while there is none (`beginChangePin` then opens Set a
+    /// PIN), "Change PIN…" after. Same id either way.
     private var changePIN: some View {
-        UIListRow(label: Self.changePinLabel) { actions.beginChangePin() }
-            .uiControl("ui.settings.changepin", kind: .button, read: { Self.changePinLabel },
+        let label = actions.store.parentPIN == nil ? Self.setPinLabel : Self.changePinLabel
+        return UIListRow(label: label) { actions.beginChangePin() }
+            .uiControl("ui.settings.changepin", kind: .button,
+                read: { [actions] in actions.store.parentPIN == nil ? Self.setPinLabel : Self.changePinLabel },
                 activate: { actions.beginChangePin() })
     }
 
@@ -1528,74 +1489,17 @@ struct UISettingsPanelView: View {
     }
 
     static let changePinLabel = "Change PIN…"
+    static let setPinLabel = "Set a PIN…"
     /// Says what a parent needs before they press: the Mac's password, not the PIN.
     static let removeCaption = "Removing SentryScreen needs an administrator name and password."
 }
 
 // MARK: - Confirmation (spec §9.4 hide icon, §9.5 turn off)
 
-/// One card for every destructive confirmation (Settings-Confirm board, with
-/// the owner's revisions): the red mark and the title on ONE line, the spec's
-/// copy under it split the way an NSAlert splits it, then Cancel and a red
-/// confirm, centred. Deliberately NOT given `.defaultAction`: Return should
-/// not be able to turn protection off. The card says nothing about the PIN
-/// (owner revision: no "Asks for your PIN"); the PIN layer that follows says
-/// what it is for.
-///
-/// The copy is UNCHANGED from `UIConfirm` (spec §9.4/§9.5 verbatim). The
-/// board words some cards differently ("Hide the menu bar icon?", "Deactivate
-/// this Mac?"); only the layout was approved, so those wordings are open
-/// decisions, not edits made here.
-struct UIConfirmView: View {
-    @ObservedObject var actions: UIActions
-    let spec: UIConfirm
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 12) {
-                UISettingsConfirmMark(symbol: spec.symbol)
-                Text(spec.title)
-                    .uiFont(.headline)
-                    .foregroundStyle(SentryColor.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            Text(spec.body)
-                .uiFont(.callout)
-                .foregroundStyle(SentryColor.ink2)
-                .fixedSize(horizontal: false, vertical: true)
-                // Reads the WHOLE copy, title included: the assert that
-                // guards this text must fail if either half drifts from
-                // the spec.
-                .uiControl(spec.noteID, kind: .text, read: { spec.copy })
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                Button("Cancel") { actions.cancelConfirm() }
-                    .buttonStyle(UISettingsOutlineButtonStyle(
-                        minHeight: UISettingsLook.doneHeight, horizontalPadding: 16))
-                    .keyboardShortcut(.cancelAction)
-                    .uiControl(spec.cancelID, kind: .button, read: { "Cancel" },
-                        activate: { actions.cancelConfirm() })
-                Button(spec.confirmLabel) { actions.acceptConfirm() }
-                    .buttonStyle(UISettingsDangerButtonStyle())
-                    .uiControl(spec.confirmID, kind: .button, read: { spec.confirmLabel },
-                        activate: { actions.acceptConfirm() })
-                Spacer(minLength: 0)
-            }
-            // The confirm button's offset shadow is drawn outside its frame.
-            .padding(.trailing, UISettingsLook.shadowRoom.width)
-            .padding(.bottom, UISettingsLook.shadowRoom.height)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(spec.copy)
-    }
-}
-
 // MARK: - Removal confirmation (SPEC §8.1(7))
 
 /// The one card between "Remove SentryScreen…" and the administrator prompt.
-/// Same shape as `UIConfirmView` — red glyph, the copy, Cancel and a red
-/// confirm — plus the two questions `packaging/uninstall.sh` accepts, and the
+/// A red glyph, the copy, Cancel and a red confirm, plus the two questions `packaging/uninstall.sh` accepts, and the
 /// closing line that must be on screen BEFORE the script boots this agent out.
 struct UIRemoveView: View {
     @ObservedObject var actions: UIActions
@@ -1616,7 +1520,7 @@ struct UIRemoveView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Same head as `UIConfirmView` (review 2026-09-29, item 11): the
+            // The confirmation card's head (review 2026-09-29, item 11): the
             // site danger mark, not systemRed.
             HStack(alignment: .center, spacing: 12) {
                 UISettingsConfirmMark(symbol: UISymbol.remove)
