@@ -41,6 +41,9 @@ final class TuningReadout {
         /// Capture time of the box's frame (`at` is when it was recorded,
         /// which is what the 60 s window is measured in).
         var frameAt: Double? = nil
+        /// The covered label covered-beats-exposed judged this box as, when
+        /// it relabelled it AND the box still blocked (Strict). nil otherwise.
+        var judgedAs: String? = nil
     }
 
     /// ONE ROW PER TRACK (2026-10-20): a policy class in one window at one
@@ -106,6 +109,11 @@ final class TuningReadout {
         let ageSecs: Double
         /// `peak × 0.5^(age / rankHalfLifeSecs)`, the sort key.
         let rank: Double
+        /// Set when covered-beats-exposed relabelled the latest box and it
+        /// was covered under the covered class's floor (Strict): `floor` is
+        /// then that class's, which the row says so it does not read as a
+        /// wrong floor for the exposed class (owner 2026-10-20).
+        var judgedAs: String? = nil
 
         var code: String { TuningReadout.classCode(label) }
         /// NEAR MISS: the peak sat under its floor by at most `nearMissBand`.
@@ -140,6 +148,7 @@ final class TuningReadout {
         var sidePt: Double?
         var status: TrackRow.Status
         var hits: Int
+        var judgedAs: String? = nil
     }
 
     /// A box a tuning rule removed or relabelled, with the rule that did it.
@@ -412,6 +421,7 @@ final class TuningReadout {
             var hit = Hit(at: now, label: d.label, conf: d.confidence, sidePt: side)
             hit.windowID = droppedRaw[i] ?? windowOfRaw[i]
             hit.frameAt = frameAt
+            if let demotion = verdicts[i].demotion, verdicts[i].passes { hit.judgedAs = demotion.to }
             if let (status, floor) = Self.fate(verdicts[i], raw: d, tuning: tuning, mode: mode, blockFaces: blockFaces) {
                 hit.status = status
                 trackHits.append((d.box, hit, floor, droppedRaw[i] != nil))
@@ -564,6 +574,7 @@ final class TuningReadout {
             t.latest = hit.conf
             t.floor = floor
             t.sidePt = hit.sidePt
+            t.judgedAs = hit.judgedAs
             t.hits += 1
             if status.weight >= t.status.weight { t.status = status }
             if t.app == nil { t.app = app }
@@ -588,7 +599,7 @@ final class TuningReadout {
         }
         tracks[key] = Track(
             key: key, app: app, lastAt: now, peak: hit.conf, latest: hit.conf, floor: floor,
-            sidePt: hit.sidePt, status: status, hits: 1)
+            sidePt: hit.sidePt, status: status, hits: 1, judgedAs: hit.judgedAs)
     }
 
     static func rank(_ t: Track, now: Double) -> Double {
@@ -654,7 +665,7 @@ final class TuningReadout {
             TrackRow(
                 id: t.key.id, label: t.key.label, windowID: t.key.windowID, app: t.app, peak: t.peak,
                 latest: t.latest, floor: t.floor, sidePt: t.sidePt, status: t.status, hits: t.hits,
-                ageSecs: max(0, now - t.lastAt), rank: Self.rank(t, now: now))
+                ageSecs: max(0, now - t.lastAt), rank: Self.rank(t, now: now), judgedAs: t.judgedAs)
         }.sorted { $0.rank != $1.rank ? $0.rank > $1.rank : $0.id < $1.id }
         out.tracksEvicted = tracksEvicted
         out.attributionSkipped = attributionSkipped
@@ -1438,9 +1449,17 @@ struct UIDeveloperSettingsSection: View {
     /// "0.93 · floor 0.90" — the row's score text. Latest follows when it
     /// differs from the peak.
     static func scoreText(_ r: TuningReadout.TrackRow) -> String {
-        var t = "\(TuningReadout.conf(r.peak)) · floor \(TuningReadout.conf(r.floor))"
+        let floorName = r.judgedAs == nil ? "floor" : "covered floor"
+        var t = "\(TuningReadout.conf(r.peak)) · \(floorName) \(TuningReadout.conf(r.floor))"
         if r.latest != r.peak { t += " (latest \(TuningReadout.conf(r.latest)))" }
         return t
+    }
+
+    /// The row's status in words; a relabelled box names the rule and the
+    /// class it was judged as.
+    static func statusText(_ r: TuningReadout.TrackRow) -> String {
+        guard let to = r.judgedAs else { return r.status.text }
+        return r.status.text + " as \(to) (covered-beats-exposed)"
     }
 
     /// A row's second line: box size, app, age (`UIDevTrackRow`).
@@ -1455,7 +1474,7 @@ struct UIDeveloperSettingsSection: View {
     static func rowLine(_ r: TuningReadout.TrackRow) -> String {
         let size = r.sidePt.map { "\(TuningReadout.fmt($0.rounded())) pt" } ?? "size unmeasured"
         return "\(r.status.symbol) \(r.code) \(scoreText(r)) \(size) \(r.app ?? "app unknown") \(ageText(r.ageSecs))"
-            + " — \(r.status.text)" + (r.nearMiss ? " · near miss" : "")
+            + " — \(statusText(r))" + (r.nearMiss ? " · near miss" : "")
     }
 
     static func moreRowsLine(_ s: TuningReadout.Snapshot) -> String {
@@ -1583,7 +1602,7 @@ struct UIDevTrackRow: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
         .background(row.nearMiss ? SentryColor.accentSoft : Color.clear)
-        .help(row.status.text + (row.nearMiss ? " · near miss" : ""))
+        .help(UIDeveloperSettingsSection.statusText(row) + (row.nearMiss ? " · near miss" : ""))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(UIDeveloperSettingsSection.rowLine(row))
     }
