@@ -711,6 +711,9 @@ final class UIDevTuning: ObservableObject {
     }
 
     let readout: TuningReadout
+    /// The Tiles row's model (ZoomTilesView.swift): its monitor rides each
+    /// pipeline like `readout`, and its preview attaches to it.
+    let tiles: UIDevTiles
     let stateRoot: String
     /// The launch policy the file layers over (`Options.tuning`) and its
     /// source name — what Reset returns to.
@@ -745,8 +748,9 @@ final class UIDevTuning: ObservableObject {
     var filePath: String { stateRoot + "/" + TuningFile.fileName }
 
     init(stateRoot: String, groupID: gid_t, base: TuningPolicy, baseSource: String,
-        readout: TuningReadout = TuningReadout())
+        readout: TuningReadout = TuningReadout(), tiles: UIDevTiles = UIDevTiles())
     {
+        self.tiles = tiles
         self.stateRoot = stateRoot
         self.groupID = groupID
         self.base = base
@@ -944,6 +948,7 @@ final class UIDevTuning: ObservableObject {
         var s = readout.snapshot(now: now)
         if frozenAt != nil { s.rows = snapshot.rows }
         if s != snapshot { snapshot = s }
+        tiles.tick(zoomTiles: draft.zoomTiles)
     }
 
     /// FREEZE TIMEOUT: a frozen readout unfreezes by itself after this long.
@@ -1134,7 +1139,7 @@ struct UIDeveloperSettingsSection: View {
             // The UI scripts scroll here to render the steadiness rows.
             .uiScrollAnchor("\(Self.idPrefix).settleRecheck")
         // Zoom (tiling) prototype (`ZoomTiles`): one 2 × 2 tile per frame in
-        // rotation on top of the full-frame pass. Off by default.
+        // rotation on top of the full-frame pass.
         Toggle(isOn: Binding(
             get: { tuning.draft.zoomTiles },
             set: { on in tuning.draft.zoomTiles = on; actions.commitDevTuning() }))
@@ -1148,6 +1153,11 @@ struct UIDeveloperSettingsSection: View {
                 tuning.draft.zoomTiles.toggle()
                 actions.commitDevTuning()
             })
+        // What the zoom pass is doing (ZoomTilesView.swift): only while it is on.
+        if tuning.draft.zoomTiles {
+            UIDevTilesRow(actions: actions, tiles: tuning.tiles)
+                .padding(.leading, 18)
+        }
         sliderRow("curtain.triggerHits", id: "\(Self.idPrefix).curtain.triggerHits",
             value: Double(tuning.draft.curtain.triggerHits), range: 1...10, step: 1, decimals: 0)
         { v in tuning.setTriggerHits(Int(v)) }

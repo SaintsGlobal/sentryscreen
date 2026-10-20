@@ -73,6 +73,11 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         popover.delegate = self
+        // The Tiles preview's window (ZoomTilesView.swift): this popover's, while shown.
+        actions.popoverWindowNumber = { [weak self] in
+            guard let self, self.popover.isShown else { return nil }
+            return self.popover.contentViewController?.view.window?.windowNumber
+        }
         // §17.7: a spawned `screencapture` takes focus and would dismiss a
         // transient popover mid-script. Under a UI script the driver owns
         // dismissal (`close`); in production a click elsewhere dismisses.
@@ -214,6 +219,7 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
         // started — and this object no longer owns any of the shared state.
         guard !removed else { return }
         activity.stop()
+        actions.popoverClosed()
         popover.contentViewController = nil
         UIRegistry.shared.removeAll()
         // Spec §4.2: the unlock window dies with the popover, so a walk-away
@@ -248,6 +254,7 @@ final class UIStatusItem: NSObject, NSPopoverDelegate {
         removed = true
         observer = nil
         activity.stop()
+        actions.popoverClosed()
         // Before removeAll(): `lock()` publishes `layer = .none`, and a
         // re-render on that publish can re-register root-layer controls.
         actions.lock()

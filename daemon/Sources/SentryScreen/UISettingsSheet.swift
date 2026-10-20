@@ -925,6 +925,30 @@ final class UIActions: ObservableObject {
 
     func turnOffDetectionView() { detectionView.turnOff(reason: .user) }
 
+    /// The popover's window number while it is shown (UIStatusItem sets
+    /// it): the window the Tiles preview draws in and asks capture to exclude.
+    var popoverWindowNumber: () -> Int? = { nil }
+
+    /// TUNING TOOL: the Tiles row's "Show blurred preview" (ZoomTilesView.swift).
+    /// On is behind the PIN — it puts screen pixels, however blurred, in the
+    /// popover; off never asks.
+    func setTilesPreview(_ on: Bool) {
+        guard let tiles = devTuning?.tiles else { return }
+        guard on else {
+            tiles.turnOffPreview(reason: .user)
+            return
+        }
+        requirePIN(ZoomTilesCopy.pinPreview, returnTo: .settings) { [weak self] in
+            tiles.turnOnPreview(window: self?.popoverWindowNumber())
+        }
+    }
+
+    /// The popover closed (UIStatusItem `popoverDidClose` and `remove`): the
+    /// Tiles preview draws in it, so it goes with it.
+    func popoverClosed() {
+        devTuning?.tiles.turnOffPreview(reason: .popoverClosed)
+    }
+
     func snapshotDetectionView() { detectionView.snapshot() }
 
     /// Every write goes through here: a failure names the path and the errno

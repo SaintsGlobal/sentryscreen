@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
+import CoreImage
 import CoreVideo
 import Foundation
 
@@ -1731,6 +1732,32 @@ final class Pipeline {
     /// exclusion sites, the panic hold, `enterPause` and `shutdown` reach the
     /// view through it.
     weak var detectionView: DetectionViewController?
+    /// The Developer tab's Tiles preview (ZoomTilesView.swift), attached the
+    /// same way: weak, the UI owns it; the pause, panic and shutdown sites
+    /// turn it off beside the Detection view.
+    weak var tilesPreview: UIDevTiles?
+    /// The Tiles row's data (`ZoomTilesMonitor`): written on every tile pass
+    /// and, while the preview is confirmed, the thumbnails. Like
+    /// `tuningReadout`: nil in headless runs.
+    var zoomTilesMonitor: ZoomTilesMonitor?
+    /// Capture has ONE exclusion listener slot; the Detection view and the
+    /// Tiles preview each run the handshake, so both hear every answer.
+    var detectionViewExclusionHandler: ((CaptureStream.ExclusionResult) -> Void)? {
+        didSet { installExclusionHandlers() }
+    }
+    var tilesPreviewExclusionHandler: ((CaptureStream.ExclusionResult) -> Void)? {
+        didSet { installExclusionHandlers() }
+    }
+    private func installExclusionHandlers() {
+        let view = detectionViewExclusionHandler, tiles = tilesPreviewExclusionHandler
+        capture?.onExclusionResult = view == nil && tiles == nil ? nil : { r in
+            view?(r)
+            tiles?(r)
+        }
+    }
+    /// detectQueue only (`TilePreview`).
+    private var tilePreviewThrottle = TilePreview.Throttle()
+    private lazy var tilePreviewContext = CIContext(options: [.cacheIntermediates: false])
     /// Main thread. Every window capture must not see: the cover window and,
     /// while the Detection view is on, its window. All
     /// three `refreshExclusion` call sites pass this, so a turned-off view's
@@ -1739,11 +1766,13 @@ final class Pipeline {
     /// `overlays.windowNumbers`.
     var exclusionWindowNumbers: [Int] {
         return Self.exclusionWindowNumbers(
-            covers: overlays.windowNumbers, detectionView: detectionView?.excludedWindowNumber)
+            covers: overlays.windowNumbers, detectionView: detectionView?.excludedWindowNumber,
+            tilesPreview: tilesPreview?.excludedWindowNumber)
     }
-    /// Pure, so the Detection view's self-test checks the same rule.
-    static func exclusionWindowNumbers(covers: [Int], detectionView: Int?) -> [Int] {
-        covers + (detectionView.map { [$0] } ?? [])
+    /// Pure, so the Detection view's and the Tiles preview's self-tests
+    /// check the same rule.
+    static func exclusionWindowNumbers(covers: [Int], detectionView: Int?, tilesPreview: Int? = nil) -> [Int] {
+        covers + (detectionView.map { [$0] } ?? []) + (tilesPreview.map { [$0] } ?? [])
     }
     /// Main thread. A pause (panic, parent, SIGUSR2) turns the
     /// Detection view off and refuses turning it on.
@@ -2490,6 +2519,11 @@ final class Pipeline {
                 zoomRecord = FrameLogger.ZoomRecord(
                     tile: zoomTile.index, ms: (passMs * 10).rounded() / 10, cut: merged.dropped,
                     full: pass.kept.map(FrameLogger.DetectionRecord.init))
+                // The Developer tab's Tiles row, before the merge replaces
+                // `pass.kept` (the full pass's own boxes decide tile-only).
+                zoomTilesMonitor?.record(ZoomTiles.passView(
+                    full: pass.kept, tile: pass.tile, index: zoomTile.index, region: zoomTile.region,
+                    at: CFAbsoluteTimeGetCurrent()))
                 pass.kept = merged.merged
                 logger.count("zoomTilePasses")
                 logger.sample("zoomPassMs", passMs)
@@ -2578,6 +2612,24 @@ final class Pipeline {
         // so its rows carry this frame's credited windows and drops.
         readoutWindows.removeAll(keepingCapacity: true)
         readoutDrops.removeAll(keepingCapacity: true)
+        // Tiles preview (ZoomTilesView.swift): only while capture has
+        // confirmed the popover's exclusion (`previewWanted`), throttled,
+        // every policy-passing box of this frame filled black. Memory only.
+        if let zoomTile, let monitor = zoomTilesMonitor, monitor.previewWanted {
+            if tilePreviewThrottle.admit(CFAbsoluteTimeGetCurrent()) {
+                let start = CFAbsoluteTimeGetCurrent()
+                if let image = TilePreview.render(
+                    pixelBuffer, region: zoomTile.region, blackout: filtered.blocked.map(\.box),
+                    context: tilePreviewContext)
+                {
+                    monitor.store(image, tile: zoomTile.index)
+                }
+                logger.sample("tilePreviewMs", (CFAbsoluteTimeGetCurrent() - start) * 1000)
+            } else {
+                // The throttle's refusals ride the 60 s summary, never silent.
+                logger.count("tilePreviewThrottled")
+            }
+        }
         var blocked = filtered.blocked
         if let roi = opts.roi {
             blocked = blocked.filter { roi.contains(CGPoint(x: $0.box.midX, y: $0.box.midY)) }
@@ -2775,6 +2827,7 @@ final class Pipeline {
             let traceStart = CFAbsoluteTimeGetCurrent()
             var walkCostMs = 0.0
             var input = traceInputs(capturedAt: capturedAt, inferStart: inferStart, detectEnd: detectEnd)
+            input.zoomTile = zoomTile?.region
             input.raw = detections
             input.weak = weak
             input.tracked = tracked
@@ -3634,8 +3687,9 @@ final class Pipeline {
         // Every pause (granted panic, parent pause, SIGUSR2) turns the
         // Detection view off first. `panicUntil` is set before a panic-class
         // pause reaches here, so it names which.
-        detectionView?.turnOff(
-            reason: (panicUntil ?? .distantPast) > Date() ? .panicPause : .parentPause)
+        let panicPause = (panicUntil ?? .distantPast) > Date()
+        detectionView?.turnOff(reason: panicPause ? .panicPause : .parentPause)
+        tilesPreview?.turnOffPreview(reason: panicPause ? .panicPause : .parentPause)
         pauseResumeAcknowledger.cancelPendingResume()
         if !appliedPause { lastPauseMarker = Date() }  // a repeat panic keeps the cadence
         appliedPause = true
@@ -3887,6 +3941,7 @@ final class Pipeline {
             // Before the administrator prompt: the panic path must never
             // leave a detections-only view (covers hidden) up behind it.
             self?.detectionView?.turnOff(reason: .panicHotkey)
+            self?.tilesPreview?.turnOffPreview(reason: .panicHotkey)
             self?.panicGate.press()
         })
 
@@ -3929,6 +3984,7 @@ final class Pipeline {
         // pipeline stopping under a running panic pause.
         if panic != nil { logger.event("panic-end", "reason=pipeline-stopped") }
         detectionView?.turnOff(reason: .shutdown)
+        tilesPreview?.turnOffPreview(reason: .shutdown)
         // A drained resume operation can still have its main acknowledgement
         // queued. Invalidate it before shutdown drains the detector queue, so
         // it cannot clear suppression or report resume after capture stops.
@@ -4439,6 +4495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A rebuilt pipeline starts with the Detection view off: the old
         // pipeline's window, trace and exclusion go with it.
         uiActions?.detectionView.detach(reason: .pipelineRebuild)
+        devTuning?.tiles.detach(reason: .pipelineRebuild)
         do {
             var pipelineOpts = opts
             // dev-overrides.json `log.mode` beats config.json's
@@ -4485,11 +4542,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipeline?.tuningReadout = devTuning?.readout
         // The Detection view attaches off; the UI turns it on (PIN).
         if let pipeline { uiActions?.detectionView.attach(pipeline) }
+        // The Tiles row (ZoomTilesView.swift): its data rides this pipeline;
+        // its preview attaches off, the UI turns it on (PIN).
+        pipeline?.zoomTilesMonitor = devTuning?.tiles.monitor
+        if let pipeline { devTuning?.tiles.attach(pipeline) }
         pipeline?.capture.onStreamGenerationInvalidated = { [weak self] in
             self?.pipeline?.requireNewCaptureFrameReceipt()
             // A rebuilt stream carries a fresh content filter: the view hides
             // until the re-arm's exclusion refresh names its window again.
             self?.uiActions?.detectionView.streamInvalidated()
+            self?.devTuning?.tiles.streamInvalidated()
             if let runtime = self?.onboardingRuntime {
                 MainActor.assumeIsolated {
                     runtime.captureGenerationInvalidated()
@@ -4742,6 +4804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             base: opts.tuning, baseSource: opts.tuningSource)
         devTuning = tuning
         uiActions?.devTuning = tuning
+        tuning.tiles.log = log
         // Diagnostic reports (Diagnostics.swift, docs/diagnostics.md): built
         // and sent only when the owner reviews one in Settings and presses Send.
         // The per-uid log dir is where agent-launch.sh sends stderr; the

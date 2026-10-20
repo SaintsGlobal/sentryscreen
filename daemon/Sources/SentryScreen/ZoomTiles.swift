@@ -111,4 +111,53 @@ enum ZoomTiles {
         }
         return (out, dropped)
     }
+
+    /// What the Developer tab's Tiles row draws for one tile pass
+    /// (`ZoomTilesMonitor`): every tile box the seam rule kept, in frame
+    /// coordinates (top-left, the way the row draws), each marked
+    /// `tileOnly` when the full-frame pass has no same-class box at
+    /// `mergeIoU` — the boxes the zoom found and the full pass missed, by the
+    /// same rule `merge` uses to call two boxes one. Labels and numbers only.
+    static func passView(
+        full: [Detection], tile: [Detection], index: Int, region: CGRect, at: CFAbsoluteTime
+    ) -> ZoomTilePass {
+        func topLeft(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height) }
+        var cut = 0
+        var boxes: [ZoomTilePass.Box] = []
+        for d in tile {
+            if isCut(d.box, tile: region) { cut += 1; continue }
+            let seen = full.contains { $0.label == d.label && Geometry.iou($0.box, d.box) >= mergeIoU }
+            boxes.append(.init(label: d.label, confidence: d.confidence, rect: topLeft(d.box), tileOnly: !seen))
+        }
+        return ZoomTilePass(index: index, region: topLeft(region), boxes: boxes, cut: cut, at: at)
+    }
+
+    /// The row's short class codes (FBE, FGE, MGE, BE, AE; the covered
+    /// classes FBC, FGC, BC); any other label prints as itself.
+    static func classCode(_ label: String) -> String {
+        [
+            "FEMALE_BREAST_EXPOSED": "FBE", "FEMALE_GENITALIA_EXPOSED": "FGE", "MALE_GENITALIA_EXPOSED": "MGE",
+            "BUTTOCKS_EXPOSED": "BE", "ANUS_EXPOSED": "AE", "FEMALE_BREAST_COVERED": "FBC",
+            "FEMALE_GENITALIA_COVERED": "FGC", "BUTTOCKS_COVERED": "BC",
+        ][label] ?? label
+    }
+}
+
+/// One tile pass, as the Tiles row draws it (`ZoomTiles.passView`). No pixels.
+struct ZoomTilePass: Equatable {
+    struct Box: Equatable {
+        let label: String
+        let confidence: Float
+        /// Frame coordinates, normalized, TOP-LEFT origin.
+        let rect: CGRect
+        /// The full-frame pass had no same-class box at IoU ≥ `ZoomTiles.mergeIoU`.
+        let tileOnly: Bool
+    }
+    let index: Int
+    /// The tile, frame coordinates, normalized, top-left origin.
+    let region: CGRect
+    let boxes: [Box]
+    /// Tile boxes dropped as cut by a seam (`ZoomTiles.isCut`).
+    let cut: Int
+    let at: CFAbsoluteTime
 }

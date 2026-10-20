@@ -48,6 +48,18 @@
   copies every row with the summary lines. Rows hold class names, numbers and the
   app name only. The table holds at most 512 tracks; past that the weakest row is
   dropped, counted on the tab and written to the log.
+- Settings › Developer has a **Tiles** row (collapsed, shown only while
+  `zoomTiles` is on) that shows what the zoom pass is doing: a 2×2 diagram of the
+  screen with the tile being checked now highlighted and each tile's latest boxes
+  outlined with class and score; boxes only the zoom found are drawn solid. It
+  shows no screen pixels. The Detection view also outlines the tile each frame
+  ran.
+- An optional **Show blurred preview** in that row (off by default, behind the
+  parent PIN) adds a heavily blurred thumbnail per tile with every blocked box
+  filled black, at most two per second, kept in memory only. It draws nothing until
+  screen capture has confirmed it no longer sees the popover, and it turns off when
+  the popover closes, on any pause or panic, after 5 minutes, and when
+  `zoomTiles` is turned off.
 
 ## 0.4.2 (build 29)
 
