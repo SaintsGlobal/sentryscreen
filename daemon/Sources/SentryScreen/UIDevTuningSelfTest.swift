@@ -448,6 +448,11 @@ extension UISelfTest {
         check("rows: the ✓ row reads \"curtain dropped\"",
             UIDeveloperSettingsSection.rowLine(cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }!)
                 .hasPrefix("✓ FBE 0.90 · floor 0.50 ") == true)
+        if let aRow {
+            let meta = UIDeveloperSettingsSection.metaText(aRow)
+            check("rows: the second line is size · app · age",
+                meta.hasSuffix(" · Preview · 0 s") && meta.hasSuffix("pt · Preview · 0 s"), meta)
+        }
 
         // ⊘: which rule removed the box.
         let rr = TuningReadout()
