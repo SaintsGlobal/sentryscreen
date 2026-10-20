@@ -795,7 +795,7 @@ final class UIActions: ObservableObject {
     /// `mode: untilRestart`, behind the confirmation copy and then the PIN.
     /// It replaces Quit deliberately — a Quit in a watchdog-supervised agent
     /// is a lie, the process is back inside 60 s.
-    /// "Review a diagnostic report…": behind the parent PIN when one is set,
+    /// "Review Report": behind the parent PIN when one is set,
     /// then the review layer, where only Send reaches the network.
     func reviewDiagnosticReport() {
         guard store.parentPIN != nil else {
@@ -811,6 +811,9 @@ final class UIActions: ObservableObject {
         guard let agent = diagnostics else { return }
         writeError = nil
         diagnosticsDraft = nil
+        // The status shows on this layer since 2026-10-20, so a previous
+        // report's "sent" must not greet a new review as if it were this one's.
+        agent.clearSendNotice()
         layer = .diagnosticsReview
         let issued = epoch
         agent.prepare { [weak self] draft in
@@ -829,12 +832,22 @@ final class UIActions: ObservableObject {
         layer = .settings
     }
 
-    /// The owner pressed Send on the review: the report goes once.
+    /// The owner pressed Send on the review: the report goes once. The
+    /// layer stays up, keeping the text that was sent on screen, and shows
+    /// the send status (2026-10-20; it used to drop back to Settings and
+    /// show the notice under the button there).
     func sendDiagnosticReport() {
-        guard let draft = diagnosticsDraft, layer == .diagnosticsReview else { return }
-        diagnosticsDraft = nil
-        layer = .settings
+        guard let draft = diagnosticsDraft, layer == .diagnosticsReview,
+            Self.diagnosticsCanSend(draft: true, send: diagnosticsSend)
+        else { return }
         diagnostics?.send(draft)
+    }
+
+    /// Send is offered only for a built report that has not gone yet: once
+    /// any send state exists for this review (`openDiagnosticReview` clears
+    /// it), the report is sending or has been sent once.
+    static func diagnosticsCanSend(draft: Bool, send: DiagnosticsSendState?) -> Bool {
+        draft && send == nil
     }
 
     func setPolicy(_ mode: PolicyMode) {

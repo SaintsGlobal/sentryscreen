@@ -10,6 +10,10 @@
   gone, and so is the Control + Option + Command + S shortcut that brought a hidden
   icon back. If an older install hid the icon, it reappears; the stored setting is
   still read but ignored.
+- Settings › Diagnostics is now a single **Review Report** link. What a report
+  contains and never contains moved to the top of the review, so it is read before
+  Send. After Send the review stays open and says whether the report arrived;
+  Close returns to Settings.
 
 ## 0.4.2 (build 29)
 

@@ -4,7 +4,7 @@ import Network
 // Diagnostic reports: the app's only network egress (docs/diagnostics.md).
 //
 // Nothing is ever sent on its own. The Mac's owner opens Settings, presses
-// "Review a diagnostic report…", enters the parent PIN when one is set, reads
+// "Review Report", enters the parent PIN when one is set, reads
 // the whole redacted report, and presses Send. That one press POSTs the report
 // once to `DiagnosticsUpload.endpoint`. The reply is read only for its status
 // code; nothing from the server is kept. There is no queue, no retry and no
@@ -29,11 +29,19 @@ enum DiagnosticsCopy {
     ]
     static let disclosureNever = "Never screen content, images, what was detected, window titles, application names, your name, or your e-mail address."
     static let disclosureOnce = "Sent once, only when you press Send. Nothing is sent in the background."
-    static let review = "Review a diagnostic report…"
+    /// Settings › General's one diagnostics link (owner 2026-10-20). The
+    /// explanation, "What is sent" and the notice left the section; the
+    /// promise now heads the review itself (`reviewPromise`).
+    static let review = "Review Report"
     static let reviewTitle = "Diagnostic report"
     static let reviewIntro = "This is exactly what will be sent. Nothing is sent unless you press Send."
+    /// The privacy promise the section used to carry, read before Send: the
+    /// "What is sent" bullets, then the never-sent line.
+    static var reviewPromise: [String] { disclosureLines + [disclosureNever] }
     static let reviewBuilding = "Building the report…"
     static let send = "Send"
+    /// The review's Cancel once a report has gone: nothing is left to cancel.
+    static let close = "Close"
     static let sending = "Sending…"
     static let buildFailed = "The report could not be built. Details are in the log."
     static let unreachable = "Could not reach the server. Nothing was sent."

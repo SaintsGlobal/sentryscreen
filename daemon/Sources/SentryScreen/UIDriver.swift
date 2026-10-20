@@ -34,7 +34,7 @@ struct DemoState: Equatable {
     /// "older file says hide" case and the icon must still be there.
     var icon = true
     var devstate = false
-    /// `diagnostics` key: the notice under the review button.
+    /// `diagnostics` key: the send status on the review layer (2026-10-20; it was under the review button).
     var sendNotice: DiagnosticsSendState? = nil
     /// `readout sample|empty`: fills the Developer
     /// tab's 60 s readout with injected detections and a curtain drop so a
