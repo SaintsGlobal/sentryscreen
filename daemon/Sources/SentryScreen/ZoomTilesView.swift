@@ -272,6 +272,7 @@ final class UIDevTiles: ObservableObject {
         case shutdown
         case pipelineRebuild = "pipeline-rebuild"
         case popoverClosed = "popover-closed"
+        case rowHidden = "row-hidden"
         case zoomTilesOff = "zoomtiles-off"
         case exclusionUnconfirmed = "exclusion-unconfirmed"
         case exclusionFailed = "exclusion-failed"
@@ -440,9 +441,14 @@ final class UIDevTiles: ObservableObject {
         updatePolling()
     }
 
+    /// The row collapsed or left the screen (another tab, a PIN prompt over
+    /// the sheet): the outline poll stops and so does the preview, which
+    /// would otherwise keep cropping and blurring at 2 Hz for nobody until
+    /// its TTL (code review 2026-10-29).
     private func updatePolling() {
         let want = visible && expanded
         if !want {
+            turnOffPreview(reason: .rowHidden)
             monitor.setRecording(false)
             timer?.invalidate()
             timer = nil

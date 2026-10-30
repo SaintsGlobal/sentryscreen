@@ -1484,6 +1484,11 @@ final class Pipeline {
     /// (`TuningReadout.isActive`), read once before `curtainRects`.
     private var readoutActive = false
     private var readoutDrops: [TuningReadout.Drop] = []
+    /// detectQueue: `curtainTick` is inside `Curtain.update`. A drop decided
+    /// there has no detector frame for `readoutDrops` to ride (the next step
+    /// clears it before recording), so it goes to the readout by window
+    /// (code review 2026-10-29).
+    private var inCurtainTick = false
     /// The readout's app names, memoized per window (same bound and rule as
     /// the Detection view's, `DetectionTraceAppNames`). detectQueue only.
     private lazy var readoutAppNames: DetectionTraceAppNames = {
@@ -1509,17 +1514,13 @@ final class Pipeline {
         }
         curtain.onDrop = { [weak self] _, id, window, sourceIndices in
             crop?(id, window, sourceIndices)
-            guard let self, readout else { return }
-            var indices = sourceIndices
-            if indices.isEmpty, let window {
-                // Same fallback the crop writer uses for a drop decided on a
-                // walk-skipped tick: this frame's blocked boxes whose centre
-                // lies in the dropped window.
-                indices = cropBlockedThisFrame.indices.filter { index in
-                    let rect = self.screenRect(self.cropBlockedThisFrame[index].box)
-                    return window.contains(CGPoint(x: rect.midX, y: rect.midY))
-                }
+            guard let self, readout, readoutActive, let tuningReadout else { return }
+            if inCurtainTick {
+                tuningReadout.recordWindowDrop(windowID: id, now: CFAbsoluteTimeGetCurrent())
+                return
             }
+            var indices = sourceIndices
+            if indices.isEmpty, let window { indices = blockedIndices(inWindow: window) }
             readoutDrops.append(TuningReadout.Drop(windowID: id, indices: indices))
         }
         curtain.onAttribution = readout ? { [weak self] credited in
@@ -1527,6 +1528,16 @@ final class Pipeline {
             for (w, indices) in credited { for i in indices { readoutWindows[i] = w } }
         } : nil
     }
+    /// detectQueue. A drop decided on a walk-skipped tick carries no source
+    /// indices; the crop writer and the readout both credit it with this
+    /// frame's blocked boxes whose centre lies in the dropped window.
+    private func blockedIndices(inWindow window: CGRect) -> [Int] {
+        cropBlockedThisFrame.indices.filter { index in
+            let rect = screenRect(cropBlockedThisFrame[index].box)
+            return window.contains(CGPoint(x: rect.midX, y: rect.midY))
+        }
+    }
+
     /// TUNING TOOL (DetectionTrace.swift): the Detection view seam. The
     /// trace is built on detectQueue at the end of `step` and published
     /// here; the overlay subscribes on main through `onTrace`.
@@ -2045,11 +2056,7 @@ final class Pipeline {
                 guard let self else { return }
                 var indices = sourceIndices
                 if indices.isEmpty {
-                    indices = cropBlockedThisFrame.indices.filter { index in
-                        guard let window else { return false }
-                        let rect = self.screenRect(self.cropBlockedThisFrame[index].box)
-                        return window.contains(CGPoint(x: rect.midX, y: rect.midY))
-                    }
+                    indices = window.map { self.blockedIndices(inWindow: $0) } ?? []
                     logger.event(
                         "cropDump",
                         "attribution=window-rect window=\(id) detections=\(indices.count)")
@@ -2727,7 +2734,7 @@ final class Pipeline {
                 blockFaces: opts.blockFaces, screen: screenSize, now: CFAbsoluteTimeGetCurrent(),
                 tracked: tracked, roi: opts.roi, blockedCount: blocked.count,
                 windows: readoutWindows, drops: readoutDrops,
-                appName: { [readoutAppNames] in readoutAppNames.name($0) }, frameAt: capturedAt)
+                appName: { [readoutAppNames] in readoutAppNames.name($0) })
         }
         lastCurtainPainted = curtains.map(\.rect)
         noteWithheld(detections, covered: painted + lastCurtainPainted, at: capturedAt)
@@ -2967,9 +2974,11 @@ final class Pipeline {
         // detector timestamp so the shared event logger does not attach an
         // old frame's latency to a parole-return drop.
         currentFrameAt = 0
+        inCurtainTick = true
         let frames = curtain.update(
             blockedScreenRects: [], tracker: windowTracker,
             display: display, at: t, evaluated: false)
+        inCurtainTick = false
         windowTracker.setTracked(curtain.watchIDs)
         logger.setActiveCovers(frames.count)  // §4.7 gauge for the updater's summary read
         let curtains = normalizeCurtains(frames, display: display)

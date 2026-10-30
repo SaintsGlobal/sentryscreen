@@ -4235,6 +4235,17 @@ enum UISelfTest {
         check("cover label: the hint sends the click to the title bar, never \"click here\"",
             RegionLayer.curtainHint == "Content blocked — click the title bar, then press ⌘W"
                 && !RegionLayer.curtainHint.contains("click here"))
+        // Code review 2026-10-29: a curtain over the whole window (fullscreen,
+        // short window, Quick Look) has no title bar to click.
+        let wholeWindow = RegionLayer(scale: 2, curtain: true)
+        wholeWindow.titleBarBare = false
+        wholeWindow.update(frame: CGRect(x: 0, y: 0, width: 1172, height: 626))
+        let stripBare = RegionLayer(scale: 2, curtain: true)
+        stripBare.update(frame: CGRect(x: 0, y: 0, width: 1172, height: 626))
+        check("cover label: a curtain over the title bar drops the title-bar hint for \"Content blocked\"",
+            wholeWindow.label.string as? String == "Content blocked"
+                && stripBare.label.string as? String == RegionLayer.curtainHint,
+            "\(wholeWindow.label.string ?? "-") / \(stripBare.label.string ?? "-")")
         print(String(format: "# cover label: curtain hint measures %.1f x %.1f pt at 13 pt medium; "
             + "a curtain shows it from %.1f pt wide", hint.width, hint.height, hint.width + pad))
         // MEASURED 2026-10-20 (this build, 13 pt medium system font): 324.6 x

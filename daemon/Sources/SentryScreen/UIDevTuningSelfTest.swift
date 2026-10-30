@@ -123,6 +123,13 @@ extension UISelfTest {
         check("devtab: a refused echo names the key and the draft is untouched",
             model.applied.stateName == "refused" && model.appliedText.contains("curtain.triggerHits") && model.draft == expected,
             model.appliedText)
+        // Code review 2026-10-29: the Tiles row follows the policy in force,
+        // not an unsaved or refused draft.
+        model.draft.zoomTiles = !other.zoomTiles
+        model.noteOutcome(.refused("refused"))
+        check("devtab: a refused write leaves inForce on the last loaded policy, whatever the draft says",
+            model.inForce == other && model.draft.zoomTiles != model.inForce.zoomTiles)
+        model.draft = expected
 
         // --- 3. reset ---
         model.reset()
@@ -210,6 +217,20 @@ extension UISelfTest {
         actions.showSettingsTab(.developer)
         check("devtab: General and back to Developer does not ask again", actions.settingsTab == .developer
             && actions.layer == .settings)
+        // Code review 2026-10-29: the tab staying open must not keep its
+        // changes PIN-free past the unlock window.
+        let unlockedAt = Date()
+        actions.clock = { unlockedAt.addingTimeInterval(UIActions.unlockWindowSecs + 1) }
+        gated.setClass("ANUS_EXPOSED") { $0.entryFrames = 5 }
+        actions.commitDevTuning()
+        check("devtab: past the unlock window, a change on the open tab asks for the PIN again",
+            actions.layer == .pin && actions.pendingConfirmation == "Apply the curtain tuning.", "\(actions.layer)")
+        actions.pinEntry = "4821"
+        actions.submitPIN()
+        spin(until: { !actions.busy })
+        check("devtab: … and the right PIN applies it and reopens the window",
+            actions.layer == .settings && actions.settingsTab == .developer, "\(actions.layer)")
+        actions.clock = { Date() }
         actions.resetDevTuning()
         actions.lock()
         actions.openSettings()
@@ -525,6 +546,15 @@ extension UISelfTest {
         feed(cr, [b], at: t0 + 1, windows: [0: 7])
         check("rows: ✓ is sticky for the track's life (a later plain hit keeps it)",
             cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }?.status == .curtain)
+        // Code review 2026-10-29: a drop decided on the geometry-only tick
+        // (no detector frame) still marks that window's live tracks.
+        let tr = TuningReadout()
+        feed(tr, [a, b], at: t0, windows: [0: 9, 1: 7])
+        tr.recordWindowDrop(windowID: 7, now: t0 + 0.25)
+        let ts = tr.snapshot(now: t0 + 0.25)
+        check("rows: a tick-decided drop gives ✓ to window 7's tracks only",
+            ts.rows.first { $0.code == "FBE" }?.status == .curtain && ts.rows.first { $0.code == "BE" }?.status == .covered,
+            "\(ts.rows.map { "\($0.code) \($0.status)" })")
         check("rows: the ✓ row reads \"curtain dropped\"",
             UIDeveloperSettingsSection.rowLine(cr.snapshot(now: t0 + 1).rows.first { $0.code == "FBE" }!)
                 .hasPrefix("✓ FBE 0.90 · floor 0.50 ") == true)

@@ -42,8 +42,14 @@
   on the Enter PIN screen, and the version is small text at the bottom left of
   Settings.
 - Settings › **Developer** asks for the parent PIN before it opens (or for a new
-  PIN, if none is set). Once open it stays unlocked until the popover closes, and
-  its changes do not ask again.
+  PIN, if none is set). Once open it stays open until the popover closes. Its
+  changes do not ask again for 5 minutes after the PIN, the same window as every
+  other setting; after that they ask again, so a Mac left with the popover open
+  does not stay unlocked.
+- The Tiles preview turns off when you collapse the Tiles row or leave the
+  Developer tab, so it no longer keeps rendering for nobody until its 5-minute
+  limit. The Tiles row follows the setting the agent has in force, not an unsaved
+  toggle.
 - The Developer tab's Tiles view has a **Zoomed tile** view: pick tile 1–4 and see
   it at full width, with its boxes and, with the blurred preview on, its
   thumbnail, plus where it is and how far it zooms (about 1.9×). It is for
@@ -63,12 +69,14 @@
   view's **Show box labels** is now on by default.
 - The Tiles view records tile passes only while its row is open on screen, so a
   closed row costs nothing per frame.
-- The exit summary in the log now covers the whole run, including the last
-  partial minute.
+- The exit summary in the log now reports the last partial minute with its own
+  frame rate and p50/p90, instead of dividing that minute's counts by the whole
+  run's time. It still covers only that last window, not the whole run.
 - Window covers now say "Content blocked — click the title bar, then press ⌘W".
   Covers let clicks through, so the old "click here" sent the click to the covered
-  content itself. The title bar is never covered, so clicking it only brings the
-  window to the front.
+  content itself. Clicking the title bar only brings the window to the front. A
+  cover over the whole window (fullscreen, a very short window, Quick Look) has no
+  title bar to click, so it says "Content blocked" instead.
 - Settings › Recent activity shows the three newest rows and scrolls to the rest
   (still up to ten).
 - The "Start at login" row is gone. It only said that the system starts

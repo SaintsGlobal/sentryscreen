@@ -130,7 +130,8 @@ enum ZoomTiles {
     /// seam rule kept, in frame coordinates (top-left, the way the row
     /// draws), with its tile-only mark. Labels and numbers only.
     static func passView(_ m: Merge, index: Int, region: CGRect, at: CFAbsoluteTime) -> ZoomTilePass {
-        func topLeft(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height) }
+        // The Detection view's flip, so both views of a tile agree.
+        let topLeft = DetectionTraceBuilder.topLeft
         let boxes = m.tileKept.map {
             ZoomTilePass.Box(label: $0.box.label, confidence: $0.box.confidence, rect: topLeft($0.box.box),
                 tileOnly: $0.tileOnly)

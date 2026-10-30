@@ -165,6 +165,17 @@ extension UISelfTest {
             tiles.turnOffPreview(reason: reason)
             check("zoom preview: \(reason.rawValue) turns it off", !tiles.preview && !tiles.monitor.previewWanted)
         }
+        tiles.setVisible(true)
+        tiles.expanded = true
+        onAndConfirmed()
+        tiles.expanded = false
+        let collapsedOff = !tiles.preview && !tiles.monitor.previewWanted
+        tiles.expanded = true
+        onAndConfirmed()
+        tiles.setVisible(false)
+        check("zoom preview: collapsing the row or leaving it turns the preview off (no 2 Hz render for nobody)",
+            collapsedOff && !tiles.preview && !tiles.monitor.previewWanted)
+        tiles.expanded = false
         onAndConfirmed()
         tiles.tick(zoomTiles: false)
         check("zoom preview: zoomTiles turned off turns it off", !tiles.preview)

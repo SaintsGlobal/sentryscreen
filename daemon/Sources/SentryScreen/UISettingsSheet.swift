@@ -207,6 +207,9 @@ final class UIActions: ObservableObject {
     /// cleared by `lock()` (popover close, cancel), like the entry fields.
     private var verifiedPin: String?
     private var unlockedUntil: Date?
+    /// The unlock window's clock. A self-test moves it past
+    /// `unlockWindowSecs` instead of waiting five minutes.
+    var clock: () -> Date = { Date() }
     private var lockTimer: Timer?
     /// Invalidates an in-flight PBKDF2 derivation. MEASURED: one derivation
     /// costs ~100 ms (UIPin.rounds receipt: 97.5 / 100.2 / 101.3 ms) on a
@@ -246,7 +249,10 @@ final class UIActions: ObservableObject {
     @Published var settingsTab: UISettingsTab?
     /// The Developer tab passed the PIN (owner 2026-10-20: the tab itself is
     /// behind it). Until the popover closes (`lock()`), the tab shows without
-    /// asking and its own changes run without asking again.
+    /// asking. Its own changes run without asking again only inside the
+    /// unlock window (`unlockWindowSecs`): a parent who unlocks the tab and
+    /// walks away with the popover open leaves nothing open past it
+    /// (code review 2026-10-29).
     @Published private(set) var developerUnlocked = false
     static let developerPin = "Open the Developer tab."
 
@@ -460,7 +466,8 @@ final class UIActions: ObservableObject {
     /// first and `body` runs on save (§4.3: until a PIN exists no mutation is
     /// possible, including by someone who is not the parent).
     /// `developer`: a change made on the Developer tab, which runs without a
-    /// prompt while the tab is unlocked (`developerUnlocked`).
+    /// prompt while the tab is unlocked (`developerUnlocked`) and the unlock
+    /// window is still open; past it the tab asks again like any other change.
     func requirePIN(
         _ confirmation: String, note: String? = nil, returnTo: Layer = .none,
         developer: Bool = false,
@@ -468,7 +475,8 @@ final class UIActions: ObservableObject {
         _ body: @escaping () -> Void
     ) {
         writeError = nil
-        if developer, developerUnlocked, store.parentPIN != nil {
+        if developer, developerUnlocked, store.parentPIN != nil,
+           let until = unlockedUntil, until > clock() {
             let dropped = pending?.onDrop
             pending = nil
             dropped?()
@@ -487,7 +495,7 @@ final class UIActions: ObservableObject {
             layer = .setPin
             return
         }
-        if let until = unlockedUntil, until > Date() {
+        if let until = unlockedUntil, until > clock() {
             pending = nil
             layer = returnTo
             body()
@@ -654,7 +662,7 @@ final class UIActions: ObservableObject {
                 // pretending the PIN was wrong.
                 pinError = "\(error)"
             case .success(.ok):
-                unlockedUntil = Date().addingTimeInterval(Self.unlockWindowSecs)
+                unlockedUntil = clock().addingTimeInterval(Self.unlockWindowSecs)
                 verifiedPin = entered
                 let run = pending?.body
                 pending = nil
@@ -717,7 +725,7 @@ final class UIActions: ObservableObject {
             confirmPin = ""
             // Setting a PIN is itself proof of the parent, so it opens the
             // unlock window: §4.3's "on save, the mutation proceeds".
-            unlockedUntil = Date().addingTimeInterval(Self.unlockWindowSecs)
+            unlockedUntil = clock().addingTimeInterval(Self.unlockWindowSecs)
             verifiedPin = saved
             let run = pending?.body
             pending = nil
@@ -924,17 +932,21 @@ final class UIActions: ObservableObject {
             tiles.turnOffPreview(reason: .user)
             return
         }
-        // Back at the row on success or cancel.
+        // Back at the row on success or cancel — only when a prompt really
+        // replaces the sheet; the unlocked tab runs at once and a stale
+        // anchor would scroll a later Settings (code review 2026-10-29).
         settingsReturnAnchor = UIDevTilesRow.idPrefix
         requirePIN(ZoomTilesCopy.pinPreview, returnTo: .settings, developer: true) { [weak self] in
             tiles.turnOnPreview(window: self?.popoverWindowNumber())
         }
+        if layer != .pin, layer != .setPin { settingsReturnAnchor = nil }
     }
 
     /// The popover closed (UIStatusItem `popoverDidClose` and `remove`): the
     /// Tiles preview draws in it, so it goes with it.
     func popoverClosed() {
         devTuning?.tiles.turnOffPreview(reason: .popoverClosed)
+        settingsReturnAnchor = nil
     }
 
     func snapshotDetectionView() { detectionView.snapshot() }

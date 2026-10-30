@@ -31,19 +31,26 @@ final class TuningReadout {
         let label: String
         let conf: Float
         let sidePt: Double?
+    }
+
+    /// One box on its way into its track: the ring keeps only `Hit` (the
+    /// `capacity` receipt's ~48 bytes), so what the track also needs rides
+    /// here for the length of one `record` (code review 2026-10-29).
+    private struct TrackHit {
+        let box: CGRect
+        let hit: Hit
+        let floor: Float
+        let dropped: Bool
         /// The window the curtain CREDITED this box to on this frame
         /// (`Curtain.onAttribution`); nil when it was not credited (not
         /// blocked, a walk-skipped frame, no curtain in this cover mode).
-        var windowID: CGWindowID? = nil
+        let windowID: CGWindowID?
         /// What the policy did with the box (never `.curtain`: a drop is a
-        /// track's fate, not one box's). nil: a box no row shows.
-        var status: TrackRow.Status? = nil
-        /// Capture time of the box's frame (`at` is when it was recorded,
-        /// which is what the 60 s window is measured in).
-        var frameAt: Double? = nil
+        /// track's fate, not one box's).
+        let status: TrackRow.Status
         /// The covered label covered-beats-exposed judged this box as, when
         /// it relabelled it AND the box still blocked (Strict). nil otherwise.
-        var judgedAs: String? = nil
+        let judgedAs: String?
     }
 
     /// ONE ROW PER TRACK (2026-10-20): a policy class in one window at one
@@ -415,7 +422,7 @@ final class TuningReadout {
         mode: PolicyMode, blockFaces: Bool, screen: CGSize, now: Double,
         tracked: TuningPolicy.CoveredInput = .init(), roi: CGRect? = nil, blockedCount: Int? = nil,
         windows: [Int: CGWindowID] = [:], drops: [Drop] = [],
-        appName: (CGWindowID) -> String? = { _ in nil }, frameAt: Double? = nil
+        appName: (CGWindowID) -> String? = { _ in nil }
     ) {
         guard !raw.isEmpty else { return }
         let measurable = screen.width > 0 && screen.height > 0
@@ -438,18 +445,17 @@ final class TuningReadout {
         }
         var apps: [CGWindowID: String] = [:]
         for w in Set(windowOfRaw.values).union(droppedRaw.values) { apps[w] = appName(w) }
-        var trackHits: [(box: CGRect, hit: Hit, floor: Float, dropped: Bool)] = []
+        var trackHits: [TrackHit] = []
         for (i, d) in raw.enumerated() {
             guard tuning.rule(for: d.label) != nil, d.label != TuningPolicy.injectLabel else { continue }
             let side: Double? = measurable
                 ? Double(min(d.box.width * screen.width, d.box.height * screen.height)) : nil
-            var hit = Hit(at: now, label: d.label, conf: d.confidence, sidePt: side)
-            hit.windowID = droppedRaw[i] ?? windowOfRaw[i]
-            hit.frameAt = frameAt
-            if let demotion = verdicts[i].demotion, verdicts[i].passes { hit.judgedAs = demotion.to }
+            let hit = Hit(at: now, label: d.label, conf: d.confidence, sidePt: side)
             if let (status, floor) = Self.fate(verdicts[i], raw: d, tuning: tuning, mode: mode, blockFaces: blockFaces) {
-                hit.status = status
-                trackHits.append((d.box, hit, floor, droppedRaw[i] != nil))
+                let judgedAs = verdicts[i].passes ? verdicts[i].demotion?.to : nil
+                trackHits.append(TrackHit(
+                    box: d.box, hit: hit, floor: floor, dropped: droppedRaw[i] != nil,
+                    windowID: droppedRaw[i] ?? windowOfRaw[i], status: status, judgedAs: judgedAs))
             }
             newHits.append(hit)
             let after = demoted[i]
@@ -512,8 +518,7 @@ final class TuningReadout {
             attributionMismatch = false
         }
         for t in trackHits {
-            mergeTrack(t.box, hit: t.hit, floor: t.floor, dropped: t.dropped,
-                app: t.hit.windowID.flatMap { apps[$0] }, now: now, limitLines: &limitLines)
+            mergeTrack(t, app: t.windowID.flatMap { apps[$0] }, now: now, limitLines: &limitLines)
         }
         hits.append(contentsOf: newHits, since: since)
         if keepFrame {
@@ -524,6 +529,19 @@ final class TuningReadout {
         }
         suppressions.append(contentsOf: newSuppressions)
         if suppressions.count > episodeCap { suppressions.removeFirst(suppressions.count - episodeCap) }
+    }
+
+    /// A curtain drop decided on the geometry-only tick (`curtainTick`, e.g.
+    /// a parole return): no detector frame carries it, so the window's live
+    /// tracks take the ✓ directly. Uncredited tracks (no window) are left
+    /// alone: nothing ties them to this window.
+    func recordWindowDrop(windowID: CGWindowID, now: Double) {
+        let since = now - Self.windowSecs
+        lock.lock()
+        defer { lock.unlock() }
+        for (key, t) in tracks where key.windowID == windowID && t.lastAt >= since {
+            tracks[key]?.status = .curtain
+        }
     }
 
     /// The curtain's `onChange` (drop / lift / handoff / ghost-ban …), as
@@ -569,25 +587,23 @@ final class TuningReadout {
     /// Lock held. One box into its track (see `TrackKey` for how a box with
     /// no credited window finds one); a new track past `trackCapacity`
     /// evicts the lowest-ranked one, counted and reported.
-    private func mergeTrack(
-        _ box: CGRect, hit: Hit, floor: Float, dropped: Bool, app: String?, now: Double,
-        limitLines: inout [String]
-    ) {
+    private func mergeTrack(_ th: TrackHit, app: String?, now: Double, limitLines: inout [String]) {
+        let (box, hit, floor, windowID) = (th.box, th.hit, th.floor, th.windowID)
         let g = Self.trackGrid
         let cx = min(g - 1, max(0, Int(box.midX * CGFloat(g))))
         let cy = min(g - 1, max(0, Int((1 - box.midY) * CGFloat(g))))  // row 0 at the top, like the screen
         let since = now - Self.windowSecs
-        var key = TrackKey(label: hit.label, windowID: hit.windowID, cellX: cx, cellY: cy)
+        var key = TrackKey(label: hit.label, windowID: windowID, cellX: cx, cellY: cy)
         if tracks[key].map({ $0.lastAt < since }) ?? true {
             // The other side of the window rule: an uncredited box joins the
             // most recently hit live track of its label and cell in any
             // window; a credited box adopts a live uncredited one (re-keyed).
             let sibling = tracks.values
                 .filter { $0.key.label == hit.label && $0.key.cellX == cx && $0.key.cellY == cy }
-                .filter { $0.lastAt >= since && (hit.windowID == nil || $0.key.windowID == nil) }
+                .filter { $0.lastAt >= since && (windowID == nil || $0.key.windowID == nil) }
                 .max { $0.lastAt < $1.lastAt }
             if let sibling {
-                if hit.windowID != nil {
+                if windowID != nil {
                     var t = tracks.removeValue(forKey: sibling.key)!
                     t.key = key
                     tracks[key] = t
@@ -596,14 +612,14 @@ final class TuningReadout {
                 }
             }
         }
-        let status: TrackRow.Status = dropped ? .curtain : (hit.status ?? .below)
+        let status: TrackRow.Status = th.dropped ? .curtain : th.status
         if var t = tracks[key], t.lastAt >= since {
             t.lastAt = now
             t.peak = max(t.peak, hit.conf)
             t.latest = hit.conf
             t.floor = floor
             t.sidePt = hit.sidePt
-            t.judgedAs = hit.judgedAs
+            t.judgedAs = th.judgedAs
             t.hits += 1
             if status.weight >= t.status.weight { t.status = status }
             if t.app == nil { t.app = app }
@@ -628,7 +644,7 @@ final class TuningReadout {
         }
         tracks[key] = Track(
             key: key, app: app, lastAt: now, peak: hit.conf, latest: hit.conf, floor: floor,
-            sidePt: hit.sidePt, status: status, hits: 1, judgedAs: hit.judgedAs)
+            sidePt: hit.sidePt, status: status, hits: 1, judgedAs: th.judgedAs)
     }
 
     static func rank(_ t: Track, now: Double) -> Double {
@@ -758,6 +774,11 @@ final class UIDevTuning: ObservableObject {
 
     @Published var draft: TuningPolicy
     @Published private(set) var applied: Applied
+    /// The policy the agent last reported in force (`noteOutcome`), not the
+    /// draft under the parent's hands. The Tiles row and its preview follow
+    /// this: a refused write or a cancelled PIN leaves the draft disagreeing
+    /// with the pipeline (code review 2026-10-29).
+    @Published private(set) var inForce: TuningPolicy
     /// A failed write names the path and the errno (§3.4 rule); never dropped silently.
     @Published private(set) var writeError: String?
     /// A REFUSED EDIT, in the parser's own wording (`TuningPolicy.parseStepsText`
@@ -789,6 +810,7 @@ final class UIDevTuning: ObservableObject {
         self.baseSource = baseSource
         self.readout = readout
         draft = base
+        inForce = base
         applied = .none(source: baseSource)
     }
 
@@ -959,10 +981,12 @@ final class UIDevTuning: ObservableObject {
         switch outcome {
         case .absent:
             applied = .none(source: baseSource)
+            inForce = base
         case let .refused(why):
             applied = .refused(why)
         case let .loaded(p):
             applied = .applied(at)
+            inForce = p
             if !editing {
                 draft = p
                 // The fields follow the policy that is actually in force.
@@ -985,7 +1009,7 @@ final class UIDevTuning: ObservableObject {
         // nothing; this keeps "live in N s" counting down.
         let remaining = freezeRemaining(now: now)
         if remaining != freezeLeft { freezeLeft = remaining }
-        tiles.tick(zoomTiles: draft.zoomTiles)
+        tiles.tick(zoomTiles: inForce.zoomTiles)
     }
 
     /// FREEZE TIMEOUT: a frozen readout unfreezes by itself after this long.
@@ -1266,8 +1290,9 @@ struct UIDeveloperSettingsSection: View {
                 tuning.draft.zoomTiles.toggle()
                 actions.commitDevTuning()
             })
-        // What the zoom pass is doing (ZoomTilesView.swift): only while it is on.
-        if tuning.draft.zoomTiles {
+        // What the zoom pass is doing (ZoomTilesView.swift): only while the
+        // pipeline runs it, whatever the unsaved toggle says.
+        if tuning.inForce.zoomTiles {
             UIDevTilesRow(actions: actions, tiles: tuning.tiles)
         }
         Text("curtain")

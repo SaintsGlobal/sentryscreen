@@ -340,8 +340,6 @@ enum UninstallCopy {
     static let keepTickCaption = "For a reinstall on this Mac."
     static let cardCancelLabel = "Cancel"
     static let cardRemoveLabel = "Uninstall"
-    /// Under the Settings row that opens the card.
-    static let rowCaption = "Needs an admin password."
     /// Card body once the Uninstaller has opened (`Outcome.handedOff`).
     static let waitingTitle = "Enter the admin password"
     static let waitingBody = "Finish in the Uninstaller window. SentryScreen closes when it\u{2019}s done."
