@@ -59,6 +59,9 @@ struct DetectionTrace {
     let walk: CurtainWalk
     let windows: [CurtainWindow]
     let stats: Stats
+    /// The zoom tile the detector ran on this frame (normalized, top-left),
+    /// outlined by the view; nil with zoomTiles off.
+    var zoomTile: CGRect? = nil
 
     struct Box: Equatable {
         /// Index in the raw detector list (synthetic boxes follow it).

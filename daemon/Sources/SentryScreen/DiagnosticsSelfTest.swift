@@ -6,8 +6,31 @@ import Foundation
 // truncation. Nothing here touches the network.
 
 extension UISelfTest {
+    /// Settings cleanup 2026-10-20: the section is one "Review Report" link;
+    /// the privacy promise and the send status live on the review, and Send
+    /// is offered once per review. Pure: no agent, no network.
+    static func caseDiagnosticsReviewCopy() {
+        check("diagnostics: the Settings row reads \"Diagnostic report…\"", DiagnosticsCopy.review == "Diagnostic report…")
+        let promise = DiagnosticsCopy.reviewPromise
+        check("diagnostics: the review's promise carries every \"What is sent\" line, then the never-sent line",
+            promise == DiagnosticsCopy.disclosureLines + [DiagnosticsCopy.disclosureNever]
+                && promise.last?.hasPrefix("Never screen content") == true && promise.count == 7,
+            "\(promise)")
+        check("diagnostics: Send needs a built report and no send yet for this review",
+            UIActions.diagnosticsCanSend(draft: true, send: nil)
+                && !UIActions.diagnosticsCanSend(draft: false, send: nil)
+                && !UIActions.diagnosticsCanSend(draft: true, send: .sending)
+                && !UIActions.diagnosticsCanSend(draft: true, send: .sent(at: 0))
+                && !UIActions.diagnosticsCanSend(draft: true, send: .failed("x")))
+        check("diagnostics: the review's status ids replace the section's notice ids",
+            UIDiagnosticsControlID.reviewNotice == "ui.diagnostics.review.notice"
+                && UIDiagnosticsControlID.reviewNoticeState == "ui.diagnostics.review.notice.state"
+                && UIDiagnosticsControlID.reviewPromise == "ui.diagnostics.review.promise")
+    }
+
     static func caseDiagnostics(_ dir: String) {
         try! FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        caseDiagnosticsReviewCopy()
         guard let fixtures = fixture("daemon/testdata/diagnostics") else { return }
         let fm = FileManager.default
 

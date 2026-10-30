@@ -31,31 +31,33 @@ final class DetectionFixture {
         let everyOtherFrame: Bool
     }
 
-    /// Default tuning, standard policy — what each box reaches:
-    ///  1. FEMALE_BREAST_EXPOSED 0.83, 140 pt: passes → region cover (after
+    /// Default tuning, standard policy — what each box reaches (scores
+    /// raised 2026-10-20 with the shipped floors, FBE 0.90 / BE 0.80, so
+    /// boxes 1, 4 and 7 still pass):
+    ///  1. FEMALE_BREAST_EXPOSED 0.93, 140 pt: passes → region cover (after
     ///     entryFrames in curtain mode) and curtain hits on the window under it.
-    ///  2. MALE_GENITALIA_EXPOSED 0.41: below the 0.50 threshold.
+    ///  2. MALE_GENITALIA_EXPOSED 0.41: below the 0.90 threshold.
     ///  3. FEMALE_BREAST_COVERED 0.72, 200 pt, with FEMALE_BREAST_EXPOSED 0.88
     ///     100 pt fully inside it: the exposed box is demoted (overlap 1.00 ≥
     ///     coveredOverlap 0.90) and, like the covered box, is a class the
     ///     standard policy does not block.
-    ///  4. BUTTOCKS_EXPOSED 0.77 on every other evaluated frame: never two
+    ///  4. BUTTOCKS_EXPOSED 0.85 on every other evaluated frame: never two
     ///     consecutive sightings, so in curtain mode it sits at entry 1/2.
     ///  5. ANUS_EXPOSED 0.90, 16 pt: passes at the defaults; reaches the size
     ///     floor once `minBoxPt` > 16 (or a staircase step) is set.
     ///  6. FACE_FEMALE 0.90: not a policy class (hidden by default).
-    ///  7. FEMALE_BREAST_EXPOSED 0.80, 100 pt, in the top-right corner below
+    ///  7. FEMALE_BREAST_EXPOSED 0.92, 100 pt, in the top-right corner below
     ///     the menu bar — usually bare desktop, so the walk finds no window
     ///     (orphan). Whatever is really there is what the trace reports.
     static let standard: [Spec] = [
-        Spec(label: "FEMALE_BREAST_EXPOSED", confidence: 0.83, centre: CGPoint(x: 0.30, y: 0.40), sidePt: 140, everyOtherFrame: false),
+        Spec(label: "FEMALE_BREAST_EXPOSED", confidence: 0.93, centre: CGPoint(x: 0.30, y: 0.40), sidePt: 140, everyOtherFrame: false),
         Spec(label: "MALE_GENITALIA_EXPOSED", confidence: 0.41, centre: CGPoint(x: 0.50, y: 0.40), sidePt: 120, everyOtherFrame: false),
         Spec(label: "FEMALE_BREAST_COVERED", confidence: 0.72, centre: CGPoint(x: 0.70, y: 0.40), sidePt: 200, everyOtherFrame: false),
         Spec(label: "FEMALE_BREAST_EXPOSED", confidence: 0.88, centre: CGPoint(x: 0.70, y: 0.40), sidePt: 100, everyOtherFrame: false),
-        Spec(label: "BUTTOCKS_EXPOSED", confidence: 0.77, centre: CGPoint(x: 0.30, y: 0.70), sidePt: 120, everyOtherFrame: true),
+        Spec(label: "BUTTOCKS_EXPOSED", confidence: 0.85, centre: CGPoint(x: 0.30, y: 0.70), sidePt: 120, everyOtherFrame: true),
         Spec(label: "ANUS_EXPOSED", confidence: 0.90, centre: CGPoint(x: 0.50, y: 0.70), sidePt: 16, everyOtherFrame: false),
         Spec(label: "FACE_FEMALE", confidence: 0.90, centre: CGPoint(x: 0.70, y: 0.70), sidePt: 120, everyOtherFrame: false),
-        Spec(label: "FEMALE_BREAST_EXPOSED", confidence: 0.80, centre: CGPoint(x: 0.96, y: 0.10), sidePt: 100, everyOtherFrame: false),
+        Spec(label: "FEMALE_BREAST_EXPOSED", confidence: 0.92, centre: CGPoint(x: 0.96, y: 0.10), sidePt: 100, everyOtherFrame: false),
     ]
 
     /// Point sizes need a screen; a 0×0 screen (unmeasured display) sizes

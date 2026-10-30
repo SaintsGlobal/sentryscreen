@@ -20,7 +20,7 @@ enum UninstallWorker {
         let model = UninstallerModel()
         launch(model: model, operation: {
             valid ? Uninstall.execute(Uninstall.appleScript(selected))
-                : .failed(code: 64, message: "Invalid removal arguments. Open removal from SentryScreen Settings.")
+                : .failed(code: 64, message: "Invalid uninstall arguments. Open Uninstall from SentryScreen Settings.")
         }, handle: { outcome, retry, finish in
             let retryAllowed: Bool
             switch outcome {
@@ -152,10 +152,10 @@ struct UninstallerResult: Equatable {
                                                          : "Settings and PIN deleted"),
             ]
             return UninstallerResult(
-                headline: "SentryScreen is removed", rows: rows, primary: .done, secondary: nil)
+                headline: "SentryScreen is uninstalled", rows: rows, primary: .done, secondary: nil)
         case .cancelled:
             return UninstallerResult(
-                headline: "Removal cancelled", subline: "Nothing was changed.",
+                headline: "Uninstall cancelled", subline: "Nothing was changed.",
                 primary: retryAllowed ? .tryAgain : .close, secondary: retryAllowed ? .close : nil)
         case let .failed(code, message):
             let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -165,7 +165,7 @@ struct UninstallerResult: Equatable {
             // say protection is untouched; every other failure fails closed.
             let refused = code == refusedBeforeRemovalCode
             return UninstallerResult(
-                headline: refused ? "Removal didn\u{2019}t start" : "Removal failed",
+                headline: refused ? "Uninstall didn\u{2019}t start" : "Uninstall failed",
                 subline: refused ? "Nothing was changed. Protection is still on."
                                  : "It isn\u{2019}t confirmed, so don\u{2019}t count on protection.",
                 details: "Exit code \(code)" + (text.isEmpty ? "" : "\n" + text),

@@ -483,7 +483,7 @@ enum DetectionViewCopy {
     static let nonPolicyLabel = "Show non-policy classes"
     static let nonPolicyCaption = "Also outlines faces and other classes the policy never covers."
     static let labelsLabel = "Show box labels"
-    static let labelsCaption = "Off: outlines only — hover a box to see its label."
+    static let labelsCaption = "On by default. Off: outlines only — hover a box to see its label."
     static let weakLabel = "Show weak detections"
     static let weakCaption = "Also outlines boxes the detector scored under 0.25. View only: they never reach a cover or curtain."
     static func weakFloorText(_ f: Float) -> String { "From score \(f2(f))" }
@@ -491,6 +491,13 @@ enum DetectionViewCopy {
     static let snapshotLabel = "Snapshot this frame"
     static let legendDisclosure = "What the colors mean"
     static let statusOff = "Off"
+    static let optionsDisclosure = "Options"
+    /// The closed Options fold's note: which options are on ("2 on"), nil
+    /// when none is.
+    static func optionsOn(synthetic: Bool, nonPolicy: Bool, labels: Bool, weak: Bool) -> String? {
+        let n = [synthetic, nonPolicy, labels, weak].filter { $0 }.count
+        return n == 0 ? nil : "\(n) on"
+    }
     static let statusWaiting = "On — waiting for capture to hide the view from the detector…"
 
     static func statusOn(until: Date) -> String { "On — turns off at \(UIState.clockTime.string(from: until))" }
@@ -546,6 +553,10 @@ struct UIDetectionViewSection: View {
     @ObservedObject var actions: UIActions
     @ObservedObject var view: DetectionViewController
     @State private var legendOpen = false
+    /// The four drawing options, folded (VM render 2026-10-20: with their
+    /// captions they were half the card). Closed, the fold names the ones
+    /// that are on.
+    @State private var optionsOpen = false
 
     static let idPrefix = "ui.settings.developer.detectionview"
 
@@ -565,26 +576,35 @@ struct UIDetectionViewSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .uiControl("\(Self.idPrefix).mode.caption", kind: .text,
                             read: { [view] in DetectionViewCopy.modeCaption(view.mode) })
-                    statusRow
+                    // Off, the radio and its caption already say so; the
+                    // status line ("Off" a third time) shows only while on.
+                    if view.isOn { statusRow }
                     Divider()
-                    toggleRow(DetectionViewCopy.syntheticLabel, caption: DetectionViewCopy.syntheticCaption,
-                        id: "synthetic", isOn: { [view] in view.synthetic }) { actions.setDetectionViewSynthetic($0) }
-                    toggleRow(DetectionViewCopy.nonPolicyLabel, caption: DetectionViewCopy.nonPolicyCaption,
-                        id: "nonpolicy", isOn: { [view] in view.showNonPolicy }) { view.setShowNonPolicy($0) }
-                    // No PIN: labels change what the view draws, never protection.
-                    toggleRow(DetectionViewCopy.labelsLabel, caption: DetectionViewCopy.labelsCaption,
-                        id: "labels", isOn: { [view] in view.showLabels }) { view.setShowLabels($0) }
-                    // No PIN: weak boxes reach the trace only, never protection.
-                    toggleRow(DetectionViewCopy.weakLabel, caption: DetectionViewCopy.weakCaption,
-                        id: "weak", isOn: { [view] in view.showWeak }) { view.setShowWeak($0) }
-                    if view.showWeak { weakSlider }
-                    Divider()
-                    snapshotRow
-                    if let refusal = view.refusal {
-                        UIInlineMessage(text: refusal, symbol: UISymbol.warning, tint: .systemRed)
-                            .uiControl("\(Self.idPrefix).refusal", kind: .text, read: { [view] in view.refusal ?? "" })
+                    optionsToggle
+                    if optionsOpen {
+                        toggleRow(DetectionViewCopy.syntheticLabel, caption: DetectionViewCopy.syntheticCaption,
+                            id: "synthetic", isOn: { [view] in view.synthetic }) { actions.setDetectionViewSynthetic($0) }
+                        toggleRow(DetectionViewCopy.nonPolicyLabel, caption: DetectionViewCopy.nonPolicyCaption,
+                            id: "nonpolicy", isOn: { [view] in view.showNonPolicy }) { view.setShowNonPolicy($0) }
+                        // No PIN: labels change what the view draws, never protection.
+                        toggleRow(DetectionViewCopy.labelsLabel, caption: DetectionViewCopy.labelsCaption,
+                            id: "labels", isOn: { [view] in view.showLabels }) { view.setShowLabels($0) }
+                        // No PIN: weak boxes reach the trace only, never protection.
+                        toggleRow(DetectionViewCopy.weakLabel, caption: DetectionViewCopy.weakCaption,
+                            id: "weak", isOn: { [view] in view.showWeak }) { view.setShowWeak($0) }
+                        if view.showWeak { weakSlider }
                     }
                     Divider()
+                    // The snapshot block has its own rule under it only when
+                    // something is in it (off and unrefused, it is empty).
+                    if view.isOn || view.refusal != nil {
+                        if view.isOn { snapshotRow }
+                        if let refusal = view.refusal {
+                            UIInlineMessage(text: refusal, symbol: UISymbol.warning, tint: .systemRed)
+                                .uiControl("\(Self.idPrefix).refusal", kind: .text, read: { [view] in view.refusal ?? "" })
+                        }
+                        Divider()
+                    }
                     legend
                 }
             }
@@ -612,6 +632,29 @@ struct UIDetectionViewSection: View {
                 guard let m = DetectionViewMode(rawValue: raw) else { return }
                 actions.selectDetectionViewMode(m, returnTo: .settings)
             })
+    }
+
+    private var optionsToggle: some View {
+        let toggle = { optionsOpen.toggle() }
+        let on = DetectionViewCopy.optionsOn(synthetic: view.synthetic, nonPolicy: view.showNonPolicy,
+            labels: view.showLabels, weak: view.showWeak)
+        return Button(action: toggle) {
+            HStack(spacing: 4) {
+                Image(systemName: UISymbol.disclosure)
+                    .uiFont(.caption2, weight: .semibold)
+                    .rotationEffect(.degrees(optionsOpen ? 90 : 0))
+                Text(DetectionViewCopy.optionsDisclosure).uiFont(.caption)
+                if !optionsOpen, let on {
+                    Text(on).uiFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(optionsOpen ? "Expanded" : "Collapsed")
+        .uiControl("\(Self.idPrefix).options", kind: .button, read: { optionsOpen ? "open" : "closed" },
+            activate: toggle)
     }
 
     private var statusText: String {

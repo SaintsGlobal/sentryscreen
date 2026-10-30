@@ -88,7 +88,7 @@ extension UISelfTest {
         let labels = TuningPolicy.exposedLabels + TuningPolicy.coveredLabels
             + [TuningPolicy.injectLabel, "FACE_FEMALE", "FACE_MALE", "ARMPITS_EXPOSED"]
         var stepped = TuningPolicy.defaults
-        stepped.standard["FEMALE_BREAST_EXPOSED"]?.thresholdSteps = [.init(minPt: 48, threshold: 0.7), .init(minPt: 96, threshold: 0.9)]
+        stepped.standard["FEMALE_BREAST_EXPOSED"]?.thresholdSteps = [.init(minPt: 48, threshold: 0.92), .init(minPt: 96, threshold: 0.95)]  // above the 0.90 base, so both can fire
         stepped.strict["FEMALE_BREAST_COVERED"]?.thresholdSteps = [.init(minPt: 64, threshold: 0.8)]
         var floored = TuningPolicy.defaults
         for l in TuningPolicy.exposedLabels { floored.standard[l]?.minBoxPt = 32 }
@@ -282,7 +282,7 @@ extension UISelfTest {
             }
         }
         let defaults = kinds(.defaults)
-        check("detection-trace: fixture at the defaults — passes, below 0.50, class off (covered + "
+        check("detection-trace: fixture at the defaults — passes, below 0.90, class off (covered + "
             + "demoted), entry box passes, 16 pt passes, face not a policy class, orphan box passes",
             defaults == ["passes", "below", "classOff", "classOff", "passes", "passes", "notPolicy", "passes"],
             "\(defaults)")
@@ -294,10 +294,10 @@ extension UISelfTest {
             kinds(.defaults, .strict)[2...3] == ["passes", "passes"], "\(kinds(.defaults, .strict))")
         var tuned = TuningPolicy.defaults
         tuned.standard["ANUS_EXPOSED"]?.minBoxPt = 24
-        tuned.standard["FEMALE_BREAST_EXPOSED"]?.thresholdSteps = [.init(minPt: 128, threshold: 0.9)]
+        tuned.standard["FEMALE_BREAST_EXPOSED"]?.thresholdSteps = [.init(minPt: 128, threshold: 0.95)]
         let withTuning = kinds(tuned)
-        check("detection-trace: fixture with minBoxPt 24 and a {128 pt, 0.90} step — 16 pt box hits "
-            + "the size floor, the 140 pt 0.83 box the step, the 100 pt orphan box stays under the step",
+        check("detection-trace: fixture with minBoxPt 24 and a {128 pt, 0.95} step — 16 pt box hits "
+            + "the size floor, the 140 pt 0.93 box the step, the 100 pt orphan box stays under the step",
             withTuning[5] == "minBox" && withTuning[0] == "step" && withTuning[7] == "passes", "\(withTuning)")
         let roi = kinds(.defaults, roi: CGRect(x: 0, y: 0, width: 0.9, height: 1))
         check("detection-trace: fixture with an ROI that excludes the top-right corner — orphan box outside ROI",

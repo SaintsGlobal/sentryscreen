@@ -340,6 +340,9 @@ enum SentryLanternArt {
 ///   starting  outline, eyes open, template
 ///   paused    outline, eyes closed, red pause badge
 ///   attention outline, eyes open, no smile, red "!" badge
+///   all good  the "on" face plus a green check badge (2026-10-20, owner):
+///             only when protecting AND setup is healthy
+///             (`UIState.menuBarBadgeOK`); otherwise the plain "on" face
 /// Board colours: ink #1f1a17 / night #f3e6cc, badge #a3311e / night
 /// #ff9d8a, badge mark #fbf5e6 / night #2b1d16. The badge's 4 pt ring is
 /// painted over the face in the mark colour, so the badge carries its
@@ -389,17 +392,32 @@ enum SentryLanternGlyph {
         return p
     }
 
-    enum Badge { case none, pause, alert }
+    enum Badge { case none, pause, alert, ok }
+
+    /// The badge for one glyph. `.ok` only on `.protecting`, and only when
+    /// the caller says everything else is good too (`allGood`); any other
+    /// glyph keeps its own badge or none, so a failure can never wear a check.
+    static func badge(for glyph: UIGlyph, allGood: Bool) -> Badge {
+        switch glyph {
+        case .paused: return .pause
+        case .degraded: return .alert
+        case .protecting: return allGood ? .ok : .none
+        case .starting: return .none
+        }
+    }
 
     /// A fresh image per call (UIStatusItem.glyphImage explains why).
-    static func image(for glyph: UIGlyph) -> NSImage {
-        let badge: Badge = glyph == .paused ? .pause : glyph == .degraded ? .alert : .none
+    static func image(for glyph: UIGlyph, allGood: Bool = false) -> NSImage {
+        let badge = badge(for: glyph, allGood: allGood)
         let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
             guard let cg = NSGraphicsContext.current?.cgContext else { return false }
             draw(glyph, badge: badge, in: cg)
             return true
         }
-        // Badged glyphs carry colour; the two quiet ones follow the bar.
+        // Badged glyphs carry colour; the two quiet ones follow the bar. A
+        // badged face is NOT a template, so `draw` picks its ink from the
+        // drawing appearance itself (day #1f1a17 / night #f3e6cc), which
+        // is the bar's: the face still follows a light or dark menu bar.
         image.isTemplate = badge == .none
         return image
     }
@@ -436,12 +454,29 @@ enum SentryLanternGlyph {
         // and by day #a3311e on the #fbf5e6 ring is 6.4:1 (WCAG formula).
         cg.setFillColor((night ? NSColor(srgbHex: 0x2b1d16) : NSColor(srgbHex: 0xfbf5e6)).cgColor)
         cg.fillEllipse(in: CGRect(x: centre.x - 4, y: centre.y - 4, width: 8, height: 8))
-        cg.setFillColor((night ? NSColor(srgbHex: 0xff9d8a) : NSColor(srgbHex: 0xa3311e)).cgColor)
+        // OK BADGE (2026-10-20): the brand `ok` room colour (SentryBrand.NS.ok,
+        // day #3d6b30 / night #8fd69a) on the same ring. Neither green alone is
+        // legible on both bars (WCAG: day green on a #1e1e1e dark bar 2.7:1,
+        // night green on a #f6f6f6 light bar 1.6:1; both bars ASSUMED, not
+        // captures), so it switches with the appearance like the red badge,
+        // and the ring carries the edge: day #3d6b30 on #fbf5e6 5.8:1, night
+        // #8fd69a on #2b1d16 9.5:1, the check mark the same against its fill.
+        let fill: UInt32 = badge == .ok ? (night ? 0x8fd69a : 0x3d6b30) : (night ? 0xff9d8a : 0xa3311e)
+        cg.setFillColor(NSColor(srgbHex: fill).cgColor)
         cg.fillEllipse(in: CGRect(x: centre.x - 3.1, y: centre.y - 3.1, width: 6.2, height: 6.2))
         let mark = (night ? NSColor(srgbHex: 0x2b1d16) : NSColor(srgbHex: 0xfbf5e6)).cgColor
         cg.setFillColor(mark)
         cg.setStrokeColor(mark)
-        if badge == .pause {
+        if badge == .ok {
+            // A check inside the 6.2 pt disc, same 1.1 pt stroke as the "!".
+            cg.setLineWidth(1.1)
+            cg.setLineCap(.round)
+            cg.setLineJoin(.round)
+            cg.move(to: CGPoint(x: 10.9, y: 12.3))
+            cg.addLine(to: CGPoint(x: 12.0, y: 13.4))
+            cg.addLine(to: CGPoint(x: 13.9, y: 11.1))
+            cg.strokePath()
+        } else if badge == .pause {
             for x in [11.2, 12.8] as [CGFloat] {
                 cg.addPath(CGPath(roundedRect: CGRect(x: x, y: 10.8, width: 0.8, height: 2.8),
                     cornerWidth: 0.3, cornerHeight: 0.3, transform: nil))

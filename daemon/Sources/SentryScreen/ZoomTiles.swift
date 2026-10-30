@@ -1,9 +1,9 @@
 import CoreGraphics
 import Foundation
 
-/// TUNING TOOL — the zoom (tiling) prototype, behind the Developer tab's
-/// `zoomTiles` toggle (tuning.json `"zoomTiles": true`, off by default; a
-/// production build has no field, no parser key and none of this file).
+/// The zoom (tiling) pass, behind the `zoomTiles` tuning key and the
+/// Developer tab's toggle. ON by default since 2026-10-20 (owner decision;
+/// receipt and its limits at `TuningPolicy.zoomTiles`).
 ///
 /// The detector sees the whole capture `.scaleFill`-ed to 640 × 640, so
 /// small content on a 1280 × 720 frame gets few model pixels. With the
@@ -85,18 +85,27 @@ enum ZoomTiles {
             || (tile.maxY < 1 - eps && b.maxY > 1 - edgeMargin)
     }
 
+    /// What `merge` returns: the merged list, the seam-cut count, and the
+    /// tile boxes the seam rule kept, each with whether the full pass had
+    /// no same-class box at `mergeIoU` (the Tiles row's tile-only mark).
+    struct Merge {
+        let merged: [Detection]
+        let dropped: Int
+        let tileKept: [(box: Detection, tileOnly: Bool)]
+    }
+
     /// The experiment's `arm_dets`: drop the cut tile boxes, mark the rest with
     /// `tileIndex`, then per-class greedy NMS over full + tile boxes at
     /// `mergeIoU`, highest score first (a tie keeps the full-frame box).
-    static func merge(full: [Detection], tile: [Detection], tileIndex: Int, region: CGRect)
-        -> (merged: [Detection], dropped: Int)
-    {
+    static func merge(full: [Detection], tile: [Detection], tileIndex: Int, region: CGRect) -> Merge {
         var candidates = full
         var dropped = 0
+        var kept: [(box: Detection, tileOnly: Bool)] = []
         for var d in tile {
             if isCut(d.box, tile: region) { dropped += 1; continue }
             d.tile = tileIndex
             candidates.append(d)
+            kept.append((d, !full.contains { sameBox($0, d) }))
         }
         let order = candidates.indices.sorted {
             candidates[$0].confidence != candidates[$1].confidence
@@ -105,10 +114,64 @@ enum ZoomTiles {
         var out: [Detection] = []
         for i in order {
             let d = candidates[i]
-            if out.allSatisfy({ $0.label != d.label || Geometry.iou($0.box, d.box) < mergeIoU }) {
-                out.append(d)
-            }
+            if !out.contains(where: { sameBox($0, d) }) { out.append(d) }
         }
-        return (out, dropped)
+        return Merge(merged: out, dropped: dropped, tileKept: kept)
     }
+
+    /// Two boxes are one box: same class, IoU ≥ `mergeIoU`. The one rule
+    /// both the NMS and the tile-only mark use.
+    static func sameBox(_ a: Detection, _ b: Detection) -> Bool {
+        a.label == b.label && Geometry.iou(a.box, b.box) >= mergeIoU
+    }
+
+    /// What the Developer tab's Tiles row draws for one tile pass
+    /// (`ZoomTilesMonitor`), from the pass's own `merge`: every tile box the
+    /// seam rule kept, in frame coordinates (top-left, the way the row
+    /// draws), with its tile-only mark. Labels and numbers only.
+    static func passView(_ m: Merge, index: Int, region: CGRect, at: CFAbsoluteTime) -> ZoomTilePass {
+        // The Detection view's flip, so both views of a tile agree.
+        let topLeft = DetectionTraceBuilder.topLeft
+        let boxes = m.tileKept.map {
+            ZoomTilePass.Box(label: $0.box.label, confidence: $0.box.confidence, rect: topLeft($0.box.box),
+                tileOnly: $0.tileOnly)
+        }
+        return ZoomTilePass(index: index, region: topLeft(region), boxes: boxes, cut: m.dropped, at: at)
+    }
+
+    /// `passView` from raw boxes (the self-tests): runs `merge` first.
+    static func passView(
+        full: [Detection], tile: [Detection], index: Int, region: CGRect, at: CFAbsoluteTime
+    ) -> ZoomTilePass {
+        passView(merge(full: full, tile: tile, tileIndex: index, region: region), index: index, region: region, at: at)
+    }
+
+    /// The row's short class codes (FBE, FGE, MGE, BE, AE; the covered
+    /// classes FBC, FGC, BC); any other label prints as itself.
+    static func classCode(_ label: String) -> String {
+        [
+            "FEMALE_BREAST_EXPOSED": "FBE", "FEMALE_GENITALIA_EXPOSED": "FGE", "MALE_GENITALIA_EXPOSED": "MGE",
+            "BUTTOCKS_EXPOSED": "BE", "ANUS_EXPOSED": "AE", "FEMALE_BREAST_COVERED": "FBC",
+            "FEMALE_GENITALIA_COVERED": "FGC", "BUTTOCKS_COVERED": "BC",
+        ][label] ?? label
+    }
+}
+
+/// One tile pass, as the Tiles row draws it (`ZoomTiles.passView`). No pixels.
+struct ZoomTilePass: Equatable {
+    struct Box: Equatable {
+        let label: String
+        let confidence: Float
+        /// Frame coordinates, normalized, TOP-LEFT origin.
+        let rect: CGRect
+        /// The full-frame pass had no same-class box at IoU ≥ `ZoomTiles.mergeIoU`.
+        let tileOnly: Bool
+    }
+    let index: Int
+    /// The tile, frame coordinates, normalized, top-left origin.
+    let region: CGRect
+    let boxes: [Box]
+    /// Tile boxes dropped as cut by a seam (`ZoomTiles.isCut`).
+    let cut: Int
+    let at: CFAbsoluteTime
 }

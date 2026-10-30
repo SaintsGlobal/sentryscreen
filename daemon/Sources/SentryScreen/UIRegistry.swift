@@ -253,12 +253,27 @@ final class UIScrollAnchors {
     static let shared = UIScrollAnchors()
     private(set) var anchors: Set<String> = []
     var proxy: ScrollViewProxy?
+    /// Anchors inside a scroll view NESTED in the page (2026-10-20: Recent
+    /// activity's 3-row list): the inner proxy, and the page anchor of the
+    /// nested view itself. `scroll(to:)` brings the nested view into the
+    /// page first, then the row into the nested view.
+    private var nested: [String: (proxy: ScrollViewProxy, container: String)] = [:]
 
     func register(_ id: String) { anchors.insert(id) }
-    func unregister(_ id: String) { anchors.remove(id) }
+    func unregister(_ id: String) { anchors.remove(id); nested[id] = nil }
+    func register(_ id: String, in proxy: ScrollViewProxy, container: String) {
+        anchors.insert(id)
+        nested[id] = (proxy, container)
+    }
 
     func scroll(to id: String) -> Bool {
         guard let proxy, anchors.contains(id) else { return false }
+        if let inner = nested[id] {
+            guard anchors.contains(inner.container) else { return false }
+            proxy.scrollTo(inner.container, anchor: .bottom)
+            inner.proxy.scrollTo(id, anchor: .bottom)
+            return true
+        }
         proxy.scrollTo(id, anchor: .bottom)
         return true
     }
@@ -271,6 +286,14 @@ extension View {
     func uiScrollAnchor(_ id: String) -> some View {
         self.id(id)
             .onAppear { UIScrollAnchors.shared.register(id) }
+            .onDisappear { UIScrollAnchors.shared.unregister(id) }
+    }
+
+    /// A `scrollto` target inside a nested scroll view (`proxy`), which is
+    /// itself the page anchor `container`.
+    func uiScrollAnchor(_ id: String, in proxy: ScrollViewProxy, container: String) -> some View {
+        self.id(id)
+            .onAppear { UIScrollAnchors.shared.register(id, in: proxy, container: container) }
             .onDisappear { UIScrollAnchors.shared.unregister(id) }
     }
 }

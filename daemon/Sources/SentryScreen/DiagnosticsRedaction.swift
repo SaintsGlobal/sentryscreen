@@ -271,7 +271,11 @@ enum DiagnosticsReport {
 
     /// The settings.json top-level keys a report may carry: an allowlist, so
     /// a retired or future key (the old `pin` / `pinFailures` verifier bytes
-    /// above all) never ships.
+    /// above all) never ships. `showMenuBarIcon` STAYS (2026-10-20): the
+    /// setting is gone but the key is still read and preserved in
+    /// settings.json (`UISettings.showMenuBarIcon`), it is a plain bool with
+    /// nothing to redact, and a report that shows `false` explains an older
+    /// install that once hid the icon.
     static let settingsKeys: Set<String> = [
         "version", "pause", "policyOverride", "showMenuBarIcon", "onboarding",
         "updatedAt", "updatedBy",

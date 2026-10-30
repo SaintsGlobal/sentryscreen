@@ -476,10 +476,13 @@ final class OverlayManager {
             curtainClampFrames[entry.id] = stripGrown(frame, id: entry.id)
             noteSpaceState(id: entry.id, frame: frame, screenSize: size)
             paintLog?(now, Int(entry.id), frame, 3)
+            let titleBarBare = (curtainStripDelta[entry.id] ?? 0) > 0
             if let layer = curtainLayers[entry.id] {
+                layer.titleBarBare = titleBarBare
                 layer.update(frame: frame)
             } else {
                 let layer = RegionLayer(scale: scale, curtain: true)
+                layer.titleBarBare = titleBarBare
                 hostLayer.addSublayer(layer.shape)
                 layer.update(frame: frame)
                 curtainLayers[entry.id] = layer
@@ -1282,7 +1285,8 @@ final class PaintSmoother {
 /// (including the Stage Manager strip cover) share this class.
 final class RegionLayer {
     let shape = CALayer()
-    private let label = CATextLayer()
+    /// Read by `--ui-selftest` "cover label"; written only by `update`.
+    let label = CATextLayer()
 
     /// Longest-that-fits ladder, fixed 13 pt medium, no auto-shrink (owner
     /// report 2026-09-09: the strip thumbnail showed the black cover with no
@@ -1293,13 +1297,22 @@ final class RegionLayer {
     /// form never fit there and the old single-string rule hid the label.
     /// "Blocked" (~50 pt) fits every thumbnail either receipt measured.
     static let labelLadder = ["Content blocked", "Blocked"]
-    /// Curtains (whole-window covers) lead with the way out. Owner-approved
-    /// copy 2026-10-18. ⌘W, not ⌘Q: it closes the covered tab or window, not
-    /// the whole app and every other tab in it. "Click here" first because
-    /// the keys go to the frontmost window, which may not be the covered one;
-    /// covers are click-through, so the click focuses the window underneath.
+    /// Curtains (whole-window covers) lead with the way out. ⌘W, not ⌘Q: it
+    /// closes the covered tab or window, not the whole app and every other
+    /// tab in it. A click first because the keys go to the frontmost window,
+    /// which may not be the covered one.
+    /// COPY 2026-10-20 (owner), replacing 2026-10-18's "click here, then
+    /// press ⌘W to close": covers are click-through, so "click here" sent the
+    /// click to the covered content itself (a link, a play button). The
+    /// title bar is outside the curtain (`Curtain.chromeStripPt` leaves the
+    /// window's top strip bare), so clicking it focuses the window and
+    /// touches nothing covered. Only then: a curtain over the WHOLE window
+    /// (fullscreen, a short window, Quick Look; `Curtain.contentRect`) has
+    /// no title bar to click, so it falls back to the plain ladder
+    /// (`titleBarBare`, code review 2026-10-29). Shorter, too: `--ui-selftest` "cover label"
+    /// prints the measured width and pins its range.
     /// Region covers keep the short ladder: they sit on images, not windows.
-    static let curtainHint = "Content blocked — click here, then press ⌘W to close"
+    static let curtainHint = "Content blocked — click the title bar, then press ⌘W"
     static let curtainLadder = [curtainHint] + labelLadder
     static let labelFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     /// Margin the text keeps from the cover's edge, per side, both axes.
@@ -1326,6 +1339,10 @@ final class RegionLayer {
 
     /// A curtain's ladder starts with `curtainHint`.
     let curtain: Bool
+    /// The curtain leaves the window's title bar uncovered, so the hint's
+    /// "click the title bar" names something on screen. Overlay sets it from
+    /// the strip delta before each `update`.
+    var titleBarBare = true
 
     init(scale: CGFloat, curtain: Bool = false) {
         self.curtain = curtain
@@ -1340,7 +1357,8 @@ final class RegionLayer {
 
     func update(frame: CGRect) {
         shape.frame = frame
-        guard let text = Self.labelText(forWidth: frame.width, height: frame.height, curtain: curtain),
+        guard let text = Self.labelText(forWidth: frame.width, height: frame.height,
+                                        curtain: curtain && titleBarBare),
             let s = Self.curtainLabelSizes.first(where: { $0.text == text })?.size
         else {
             label.isHidden = true

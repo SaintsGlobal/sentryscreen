@@ -38,6 +38,10 @@ struct UISettings: Equatable {
     var version = UISettings.currentVersion
     var pause: PauseState = .none
     var policyOverride: PolicyMode? = nil
+    /// LEGACY since 2026-10-20 (owner): read, validated and written back
+    /// unchanged so an older settings.json still loads and round-trips, but
+    /// nothing consults it — the menu bar icon can no longer be hidden
+    /// (`AppDelegate.statusItemWanted`) and no control writes it.
     var showMenuBarIcon = true
     var onboarding: UIOnboardingRecord = .fresh
     var updatedAt: Date? = nil

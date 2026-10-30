@@ -29,19 +29,18 @@ struct DemoState: Equatable {
     var pin = Pin.set
     var activity = 3
     var admin = true
+    /// Writes the LEGACY `showMenuBarIcon` into the demo's settings.json.
+    /// Since 2026-10-20 nothing hides the icon, so `icon false` is the
+    /// "older file says hide" case and the icon must still be there.
     var icon = true
     var devstate = false
-    /// Whether ⌘⌥⌃S registered (production: the `register()` return, spec
-    /// §9.4). Default true because that is the production norm; `hotkey
-    /// false` is the collision path, where Settings must refuse to hide the
-    /// icon rather than promise a key nothing owns.
-    var hotkey = true
-    /// `diagnostics` key: the notice under the review button.
+    /// `diagnostics` key: the send status on the review layer (2026-10-20; it was under the review button).
     var sendNotice: DiagnosticsSendState? = nil
     /// `readout sample|empty`: fills the Developer
     /// tab's 60 s readout with injected detections and a curtain drop so a
     /// render shows the panel populated. Ignored by a production demo.
     var readoutSample = false
+    var tilesSample = false
     /// `screenrecording off`: what CGPreflightScreenCaptureAccess reports in
     /// production (AppDelegate publishes it on every health change). Its own
     /// axis, not a `health` value, because it only picks which sentence the
@@ -127,14 +126,17 @@ struct DemoState: Equatable {
                 return "activity must be 0…\(Self.maxActivity)"
             }
             activity = n
-        case "admin", "icon", "devstate", "hotkey":
+        case "admin", "icon", "devstate":
             guard let b = Bool(value) else { return "\(key) must be true|false" }
             switch key {
             case "admin": admin = b
             case "icon": icon = b
-            case "devstate": devstate = b
-            default: hotkey = b
+            default: devstate = b
             }
+        case "hotkey":
+            // Refused by name, not as an unknown key: a script still passing
+            // it was written for the removed hide-icon path.
+            return "hotkey was removed 2026-10-20 with the reveal hotkey (the menu bar icon can no longer be hidden)"
         case "screenrecording":
             guard value == "on" || value == "off" else { return "screenrecording must be on|off" }
             screenRecordingOff = value == "off"
@@ -166,9 +168,12 @@ struct DemoState: Equatable {
         case "readout":
             guard value == "sample" || value == "empty" else { return "readout must be sample|empty" }
             readoutSample = value == "sample"
+        case "tiles":
+            guard value == "sample" || value == "empty" else { return "tiles must be sample|empty" }
+            tilesSample = value == "sample"
         default:
             return "unknown state key '\(key)' "
-                + "(health|paused|policy|pin|activity|admin|icon|devstate|hotkey|screenrecording|detector|displays|displayconnected|resuming|diagnostics|readout)"
+                + "(health|paused|policy|pin|activity|admin|icon|devstate|hotkey|screenrecording|detector|displays|displayconnected|resuming|diagnostics|readout|tiles)"
         }
         return nil
     }
@@ -810,17 +815,12 @@ final class UIDriver {
         // read from the same control a script reads, so the two cannot
         // disagree about which page is on screen.
         //
-        // An OPEN disclosure is exempt too: "More settings" (OWNER 2026-09-28, two tabs;
-        // Settings-General board: "Opening More settings scrolls, as the App
-        // page does today"). Closed, its row names what is inside ("PIN, menu
-        // bar icon, updates, remove"), so nothing is below a fold without a
-        // cue, and the 0 pt rule still holds for the closed page.
+        // General has no fold since 2026-10-20 (mockup A: the "More
+        // settings" disclosure became the Parent card), so the whole page,
+        // Uninstall included, must fit.
         let selected = UIRegistry.shared.control("ui.settings.tab")?.read() ?? ""
-        let disclosure = selected == "general" ? "ui.settings.more" : ""
-        let moreOpen = UIRegistry.shared.control(disclosure)?.read() == "open"
         if UITextScale.current == UITextScale.standard,
             selected != "developer",
-            !moreOpen,
             probe.scrollOverflow > tolerance,
             !allowsSettingsFold
         {
@@ -1048,10 +1048,9 @@ final class UIDemoController {
             self?.state.settings = s
             self?.state.hasParentPIN = self?.store.parentPIN != nil
             // Production's UISettingsStore.onChange → AppDelegate.syncStatusItem:
-            // a UI write of showMenuBarIcon tears the item — and the popover
-            // standing on it — down. The demo has to do the same, or the
-            // slice's own acceptance script asserts a path that exists only
-            // here (spec §10.1: the real popover on fake state, not a mock).
+            // the demo re-derives the item on every write too, or the slice's
+            // own acceptance script asserts a path that exists only here
+            // (spec §10.1: the real popover on fake state, not a mock).
             self?.syncItem()
         }
         // The demo runs the production tick too (spec §10.1: --ui-demo is the
@@ -1087,6 +1086,17 @@ final class UIDemoController {
 
     private var devTuning: UIDevTuning?
     private var devTuningSignature: TuningFile.Signature?
+    /// `state tiles sample` (ZoomTilesDemo.swift): capture's stand-in,
+    /// attached once; the passes are seeded with it.
+    private var tilesHost: ZoomTilesDemoHost?
+
+    private func applyTiles() {
+        guard demo.tilesSample, tilesHost == nil, let t = devTuning else { return }
+        let host = ZoomTilesDemoHost(blackout: ZoomTilesDemo.seed(t.tiles.monitor))
+        tilesHost = host
+        t.tiles.attach(host)
+        t.tiles.poll()
+    }
     /// `state readout sample`: what a curtain-tripping screen feeds the
     /// readout in one frame, at the sizes the false-positive receipt names
     /// (`ClassRule.minBoxFraction`: 15–68 px boxes), plus one drop.
@@ -1116,6 +1126,27 @@ final class UIDemoController {
                 raw: raw, filtered: filtered, tuning: policy, mode: .strict, blockFaces: false,
                 screen: screen, now: now - Double(i))
         }
+        // "Last 60 s" rows (2026-10-20): a curtained track (✓), a covered one
+        // (◼) and a near miss (○, 0.03 under its floor) in a fake window, at
+        // scores set FROM the policy's floors so the sample means the same
+        // thing whatever the shipped floors are. Synthetic boxes only.
+        func floor(_ l: String) -> Float { policy.standard[l]?.threshold ?? 0.5 }
+        let rows = [
+            Detection(label: "FEMALE_BREAST_EXPOSED", confidence: min(0.99, floor("FEMALE_BREAST_EXPOSED") + 0.04),
+                box: CGRect(x: 0.12, y: 0.62, width: 0.08, height: 0.12)),
+            Detection(label: "FEMALE_GENITALIA_EXPOSED", confidence: min(0.99, floor("FEMALE_GENITALIA_EXPOSED") + 0.08),
+                box: CGRect(x: 0.62, y: 0.12, width: 0.06, height: 0.09)),
+            Detection(label: "ANUS_EXPOSED", confidence: floor("ANUS_EXPOSED") - 0.03,
+                box: CGRect(x: 0.82, y: 0.62, width: 0.04, height: 0.06)),
+        ]
+        let rowFilter = policy.filter(rows, mode: .strict, blockFaces: false, screen: screen)
+        for i in 0..<4 {
+            t.readout.record(
+                raw: rows, filtered: rowFilter, tuning: policy, mode: .strict, blockFaces: false,
+                screen: screen, now: now - 6 + Double(i), blockedCount: rowFilter.blocked.count,
+                windows: [0: 4242, 1: 4242], drops: i == 2 ? [.init(windowID: 4242, indices: [0])] : [],
+                appName: { $0 == 4242 ? "Safari" : nil })
+        }
         t.readout.recordCurtain(action: "drop", windowID: 4242, app: "Safari", now: now - 3)
         t.tick(now: now)
     }
@@ -1143,11 +1174,9 @@ final class UIDemoController {
         state.policyPinned = demo.policy == .pinnedStrict
         state.basePolicy = demo.policy == .pinnedStrict ? .strict : .standard
         state.setRecentEvents(demo.activityItems())
-        // What AppDelegate.armRevealHotkey publishes in production; `hotkey
-        // false` is the collision the settings row must refuse to hide on.
-        state.revealHotkeyArmed = demo.hotkey
         actions.showDemoSendState(demo.sendNotice)
         applyReadout()
+        applyTiles()
         var err: String?
         do {
             try store.parentPINAuthority.mutate { $0 = demo.parentPINState() }
@@ -1164,12 +1193,11 @@ final class UIDemoController {
 
     /// One owner for the demo's status item, the same predicate production
     /// uses (AppDelegate.syncStatusItem). Demo state decides the icon, not the
-    /// real session (spec §10.1) — `admin false` / `icon false` exercise the
-    /// no-icon path — but it reaches here through settings.json, so a write
-    /// from the popover's own controls removes the item exactly as it does in
-    /// production.
+    /// real session (spec §10.1) — `admin false` exercises the no-icon path.
+    /// The legacy `showMenuBarIcon` is ignored here as in production
+    /// (2026-10-20), so `icon false` must leave the item in place.
     private func syncItem() {
-        let want = state.isAdmin && state.settings.showMenuBarIcon
+        let want = state.isAdmin
         if want, statusItem == nil {
             statusItem = UIStatusItem(state: state, actions: actions, activity: activity)
             statusItem?.setAppearance(appearance)

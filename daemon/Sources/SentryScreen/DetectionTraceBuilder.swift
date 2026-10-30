@@ -186,6 +186,9 @@ enum DetectionTraceBuilder {
         var curtainOutcomes: [(blockedIndices: [Int], outcome: DetectionTrace.CurtainOutcome)] = []
         var windows: [(id: CGWindowID, frame: CGRect, state: DetectionTrace.CurtainWindow.State)] = []
         var stats: DetectionTrace.Stats
+        /// The zoom tile this frame ran (`ZoomTiles.region`, Vision
+        /// bottom-left); nil with zoomTiles off.
+        var zoomTile: CGRect?
     }
 
     struct Output {
@@ -259,7 +262,8 @@ enum DetectionTraceBuilder {
             policy: input.policy, coverMode: input.coverMode, tuning: input.tuning,
             tuningSource: input.tuningSource, detectorFailed: input.detectorFailed, boxes: boxes,
             boxesOverflow: input.raw.count - kept + input.weak.count - keptWeak, walkUnattributed: unattributed,
-            walk: input.curtainWalk ?? .notCurtainMode, windows: windows, stats: input.stats)
+            walk: input.curtainWalk ?? .notCurtainMode, windows: windows, stats: input.stats,
+            zoomTile: input.zoomTile.map(topLeft))
         return Output(trace: trace, mirrorBlocked: blocked)
     }
 

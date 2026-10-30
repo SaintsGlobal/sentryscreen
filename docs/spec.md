@@ -26,7 +26,8 @@ needed. No cloud, no content leaves the Mac, no per-site lists.
 ```
 ScreenCaptureKit stream (30 fps, or 15 fps without a Neural Engine)
   → idle gate (skip unchanged frames)
-  → Core ML detector via Vision (640×640 stretch, 18 labels)
+  → Core ML detector via Vision (640×640 stretch, 18 labels; plus one tile of a
+    2×2 grid per evaluated frame, in rotation, when zoomTiles is on — the default)
   → policy filter (per-class thresholds and size floors, TuningPolicy)
   → region tracker (IoU matching, hysteresis)      → region / media covers
   → window attribution (WindowTracker, z-order)    → curtain (one cover per window)
@@ -48,7 +49,14 @@ the detector and strobe on and off.
 
 ### 5.2 Detection model
 YOLOX-S, Core ML, NMS embedded, 18 NudeNet labels; see `model/README.md`. Thresholds
-apply to the raw detector score. Performance tier is chosen at launch: `default`
+apply to the raw detector score. Shipped block floors: female breast exposed 0.90,
+female genitalia exposed 0.70, male genitalia exposed 0.90, buttocks exposed 0.80,
+anus exposed 0.70; the covered classes (strict policy) 0.60. High flat floors miss
+small or partial true content, because the model scores small boxes lower. With
+`zoomTiles` on (the default) the detector also runs one quarter of the screen per
+frame at about twice the zoom, so the four quarters are re-checked every four
+frames; this costs about 1.6× the detector time per evaluated frame (measured
+offline). Performance tier is chosen at launch: `default`
 (30 fps) when the Neural Engine is reachable, `no-ane` (15 fps) otherwise
 (`PerfTier.swift`).
 
@@ -61,7 +69,7 @@ then mapped from capture pixels to screen points.
 Boxes match active regions by IoU; matched regions follow scrolling content. Region
 and media covers paint on the first detection; in curtain mode a region needs two
 consecutive frames. A region clears after about 0.4 s of clean frames, or holds about
-1 s when its confidence was high.
+1 s when its confidence reached 0.6; at the shipped floors every region does.
 
 ### 5.5 Overlays
 One persistent, borderless, click-through window per display hosts one layer per
@@ -117,7 +125,7 @@ account and cannot unload them.
 4. **Remote escape:** keep SSH available when testing the installed agent.
 5. **Second account:** covers belong to one session; another admin account is clean.
 6. **Staged rollout:** test uninstall before relying on `KeepAlive`.
-7. **Removal:** Settings › Remove SentryScreen (administrators only) runs the
+7. **Removal:** Settings › Uninstall… (administrators only) runs the
    installed `uninstall.sh` through a separate signed uninstaller.
 8. **Development triggers** (`SIGUSR1` inject, `SIGUSR2` panic) are armed only with
    `--dev-inject`; otherwise the attempt is logged and ignored.
